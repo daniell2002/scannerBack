@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { requireAuth } from '../middlewares/auth.js'
+import { uploadPhoto } from '../middlewares/upload.js'
 import { ok, created, notFound, forbidden, badRequest } from '../helpers/response.js'
 import { startOfToday, startOfTomorrow } from '../helpers/date.js'
 import Order from '../models/Order.js'
@@ -47,16 +48,17 @@ router.get('/:code', requireAuth, async (req, res) => {
 })
 
 // POST /api/orders — registrar desde scanner
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, uploadPhoto.single('photo'), async (req, res) => {
   const { code, product, sede, operator } = req.body
   if (!code?.trim()) return badRequest(res, 'Código requerido')
 
   if (req.user.role === 'operario' && !req.user.sede)
     return badRequest(res, 'El operario no tiene sede asignada. Contacta a un administrador.')
 
-  const normCode = code.trim().toUpperCase()
-  const sedeCode = req.user.role === 'operario' ? req.user.sede : (sede || 'BOG')
-  const opName   = operator?.trim() || req.user.name || 'Sin asignar'
+  const normCode  = code.trim().toUpperCase()
+  const sedeCode  = req.user.role === 'operario' ? req.user.sede : (sede || 'BOG')
+  const opName    = operator?.trim() || req.user.name || 'Sin asignar'
+  const photoUrl  = req.file ? `/uploads/orders/${req.file.filename}` : undefined
 
   const existing = await Order.findOne({ code: normCode })
   if (existing) {
@@ -64,6 +66,7 @@ router.post('/', requireAuth, async (req, res) => {
       existing.sede = req.user.sede
     }
     existing.operator = opName
+    if (photoUrl) existing.photoUrl = photoUrl
     existing.scheduledAt = new Date()
     existing.scannedAt = new Date()
     existing.scanCount += 1
@@ -78,6 +81,7 @@ router.post('/', requireAuth, async (req, res) => {
     batch:       `BT-${Date.now().toString().slice(-6)}`,
     sede:        sedeCode,
     operator:    opName,
+    photoUrl:    photoUrl || null,
     scheduledAt: new Date(),
     updatedAt:   new Date(),
     scannedAt:   new Date(),

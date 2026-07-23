@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import path from 'path'
 import express from 'express'
 import cors from 'cors'
 import { connectDB }  from './db.js'
@@ -29,6 +30,7 @@ app.use(cors({
   },
 }))
 app.use(express.json())
+app.use('/uploads', express.static(path.resolve('uploads')))
 
 app.use('/api/auth',   authRoutes)
 app.use('/api/sedes',  sedesRoutes)
@@ -46,7 +48,7 @@ app.use((err, _req, res, _next) => {
 connectDB()
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`\n🚀 Logiconnet API corriendo en http://localhost:${PORT}\n`)
+      console.log(`\n🚀 Conexa API corriendo en http://localhost:${PORT}\n`)
     })
   })
   .catch(err => {
