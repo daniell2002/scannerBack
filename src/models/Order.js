@@ -3,7 +3,7 @@ import { Schema, model } from 'mongoose'
 const orderSchema = new Schema({
   code:        { type: String, required: true, unique: true, uppercase: true },
   product:     { type: String, required: true },
-  line:        { type: String, default: 'L-01' },
+  line:        { type: String, default: '' },
   batch:       { type: String, required: true },
   status:      { type: String, enum: ['Pendiente', 'En proceso', 'Completada', 'Bloqueada'], default: 'Pendiente' },
   priority:    { type: String, enum: ['Alta', 'Media', 'Baja'], default: 'Media' },

@@ -9,6 +9,7 @@ const router = Router()
 const safeUser = (u) => ({
   id:          u._id,
   username:    u.username,
+  email:       u.email || null,
   name:        u.name,
   role:        u.role,
   sede:        u.sede,
@@ -23,7 +24,7 @@ router.get('/', requireAuth, requireAdmin, async (_req, res) => {
 
 // POST /api/users
 router.post('/', requireAuth, requireAdmin, async (req, res) => {
-  const { username, password, name, role, sede, permissions } = req.body
+  const { username, password, name, role, sede, email, permissions } = req.body
   if (!username?.trim() || !password?.trim() || !name?.trim() || !role)
     return badRequest(res, 'Faltan campos requeridos')
 
@@ -35,6 +36,7 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 
   const user = await User.create({
     username:     username.trim().toLowerCase(),
+    email:        email?.trim().toLowerCase() || null,
     passwordHash: bcrypt.hashSync(password.trim(), 10),
     name:         name.trim(),
     role,
