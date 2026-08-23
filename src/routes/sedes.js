@@ -11,19 +11,26 @@ router.get('/', requireAuth, async (_req, res) => {
   ok(res, sedes)
 })
 
+// genera el siguiente código secuencial SEDE-001, SEDE-002, ...
+async function nextSedeCode() {
+  const sedes = await Sede.find({ code: /^SEDE-\d+$/ }, 'code')
+  const max = sedes.reduce((acc, s) => {
+    const n = Number(s.code.split('-')[1])
+    return n > acc ? n : acc
+  }, 0)
+  return `SEDE-${String(max + 1).padStart(3, '0')}`
+}
+
 // POST /api/sedes
 router.post('/', requireAuth, requireAdmin, async (req, res) => {
-  const { code, name, city, manager, activeLines } = req.body
-  if (!code?.trim() || !name?.trim() || !city?.trim() || !manager?.trim())
+  const { name, city, manager } = req.body
+  if (!name?.trim() || !city?.trim() || !manager?.trim())
     return badRequest(res, 'Faltan campos requeridos')
-  const exists = await Sede.findOne({ code: code.trim().toUpperCase() })
-  if (exists) return badRequest(res, 'Ya existe una sede con ese código')
   const sede = await Sede.create({
-    code: code.trim().toUpperCase(),
+    code: await nextSedeCode(),
     name: name.trim(),
     city: city.trim(),
     manager: manager.trim(),
-    activeLines: Number(activeLines) || 0,
   })
   created(res, sede)
 })
@@ -32,11 +39,10 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 router.patch('/:code', requireAuth, requireAdmin, async (req, res) => {
   const sede = await Sede.findOne({ code: req.params.code.toUpperCase() })
   if (!sede) return notFound(res, 'Sede no encontrada')
-  const { name, city, manager, activeLines } = req.body
-  if (name)        sede.name        = name.trim()
-  if (city)        sede.city        = city.trim()
-  if (manager)     sede.manager     = manager.trim()
-  if (activeLines !== undefined) sede.activeLines = Number(activeLines)
+  const { name, city, manager } = req.body
+  if (name)    sede.name    = name.trim()
+  if (city)    sede.city    = city.trim()
+  if (manager) sede.manager = manager.trim()
   await sede.save()
   ok(res, sede)
 })
