@@ -1,0 +1,47 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: scanner-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scanner-backend
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/dniscanner
+      - PORT=3000
+      - JWT_SECRET=logiconnet_secret_key_2024
+      - FRONTEND_URL=http://localhost:5173
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./src:/app/src
+      - ./uploads:/app/uploads
+
+  frontend:
+    build:
+      context: ../scannerFrond
+      dockerfile: Dockerfile
+    container_name: scanner-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=http://localhost:3000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ../scannerFrond/src:/app/src
+      - ../scannerFrond/index.html:/app/index.html
+
+volumes:
+  mongo_data:
