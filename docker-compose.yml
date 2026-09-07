@@ -3,8 +3,6 @@ services:
     image: mongo:7
     container_name: scanner-mongo
     restart: unless-stopped
-    ports:
-      - "27017:27017"
     volumes:
       - mongo_data:/data/db
 
@@ -18,11 +16,11 @@ services:
       - mongo
     environment:
       - MONGO_URI=mongodb://mongo:27017/dniscanner
-      - PORT=3000
+      - PORT=8080
       - JWT_SECRET=logiconnet_secret_key_2024
-      - FRONTEND_URL=http://localhost:5173
+      - FRONTEND_URL=http://lydordenes.online
     ports:
-      - "3000:3000"
+      - "8080:8080"
     volumes:
       - ./src:/app/src
       - ./uploads:/app/uploads
@@ -36,7 +34,7 @@ services:
     depends_on:
       - backend
     environment:
-      - VITE_API_URL=http://localhost:3000
+      - VITE_API_URL=http://api.lydordenes.online
     ports:
       - "5173:5173"
     volumes:

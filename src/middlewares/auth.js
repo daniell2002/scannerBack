@@ -1,7 +1,11 @@
 import jwt from 'jsonwebtoken'
 import { forbidden } from '../helpers/response.js'
 
-export const MODULES = ['ordenes', 'historial', 'scanner', 'reportes']
+// Mismo orden y claves que ALL_MODULES en el frontend (scannerFrond/src/App.vue)
+// y en la app móvil (appScanner/lib/features/home/home_screen.dart).
+// 'sedes' y 'usuarios' no están acá porque son exclusivos de admin (requireAdmin),
+// nunca asignables como permiso de operario.
+export const MODULES = ['scanner', 'ordenes', 'historial', 'estadisticas']
 
 export function requireAuth(req, res, next) {
   const header = req.headers.authorization

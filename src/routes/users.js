@@ -1,10 +1,17 @@
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import User from '../models/User.js'
-import { requireAuth, requireAdmin } from '../middlewares/auth.js'
+import { MODULES, requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { ok, created, notFound, badRequest } from '../helpers/response.js'
 
 const router = Router()
+
+// Solo se aceptan claves de módulo reales; descarta cualquier valor
+// desconocido o mal escrito que llegue del cliente.
+const sanitizePermissions = (permissions) =>
+  Array.isArray(permissions)
+    ? permissions.filter((p) => MODULES.includes(p))
+    : []
 
 const safeUser = (u) => ({
   id:          u._id,
@@ -41,7 +48,7 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
     name:         name.trim(),
     role,
     sede:         role === 'operario' ? (sede || null) : null,
-    permissions:  Array.isArray(permissions) ? permissions : [],
+    permissions:  sanitizePermissions(permissions),
   })
   created(res, safeUser(user))
 })
@@ -64,7 +71,7 @@ router.patch('/:id', requireAuth, requireAdmin, async (req, res) => {
   if (password?.trim()) {
     updates.passwordHash = bcrypt.hashSync(password.trim(), 10)
   }
-  if (Array.isArray(permissions)) updates.permissions = permissions
+  if (Array.isArray(permissions)) updates.permissions = sanitizePermissions(permissions)
 
   const user = await User.findByIdAndUpdate(
     req.params.id,
