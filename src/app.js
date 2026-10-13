@@ -73,7 +73,9 @@ connectDB()
   .then(migratePermissions)
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`\n🚀 Conexa API corriendo en http://localhost:${PORT}\n`)
+      console.log(`\n🚀 Conexa API corriendo en http://localhost:${PORT}`)
+      if (process.env.API_DOCS !== 'false') console.log(`📘 Documentación de la API: http://localhost:${PORT}/api/docs`)
+      console.log()
     })
   })
   .catch(err => {
