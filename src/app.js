@@ -9,6 +9,8 @@ import sedesRoutes    from './routes/sedes.js'
 import ordersRoutes   from './routes/orders.js'
 import usersRoutes    from './routes/users.js'
 import feedbackRoutes from './routes/feedback.js'
+import swaggerUi      from 'swagger-ui-express'
+import openapiSpec    from './docs/openapi.js'
 
 const app  = express()
 const PORT = process.env.PORT || 3000
@@ -41,6 +43,15 @@ app.use('/api/users',  usersRoutes)
 app.use('/api/feedback', feedbackRoutes)
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }))
+
+// Documentación de la API (Swagger). Se puede apagar con API_DOCS=false.
+if (process.env.API_DOCS !== 'false') {
+  app.get('/api/docs.json', (_, res) => res.json(openapiSpec))
+  app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec, {
+    customSiteTitle: 'API · Órdenes de producción',
+    swaggerOptions: { persistAuthorization: true, docExpansion: 'list' },
+  }))
+}
 
 app.use((_, res) => res.status(404).json({ message: 'Ruta no encontrada' }))
 app.use((err, _req, res, _next) => {
