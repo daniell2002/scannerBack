@@ -2,11 +2,16 @@ import jwt from 'jsonwebtoken'
 import { forbidden } from '../helpers/response.js'
 import User from '../models/User.js'
 
-// Mismo orden y claves que ALL_MODULES en el frontend (scannerFrond/src/App.vue)
-// y en la app móvil (appScanner/lib/features/home/home_screen.dart).
-// 'sedes' y 'usuarios' no están acá porque son exclusivos de admin (requireAdmin),
-// nunca asignables como permiso de operario.
-export const MODULES = ['scanner', 'ordenes', 'historial', 'estadisticas']
+// Módulos asignables por usuario. Mismas claves que el frontend
+// (scannerFrond/src/utils/modules.js) y la app móvil.
+// El admin tiene acceso a todo sin necesidad de permisos.
+export const MODULES = [
+  'inicio', 'scanner', 'ordenes', 'observaciones', 'historial', 'estadisticas',
+  'sedes', 'usuarios',
+]
+
+// Módulos que los operarios tenían incluidos antes de que fueran asignables
+export const LEGACY_IMPLICIT_MODULES = ['inicio', 'observaciones']
 
 export async function requireAuth(req, res, next) {
   const header = req.headers.authorization

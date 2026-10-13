@@ -10,6 +10,8 @@ const userSchema = new Schema({
   role:         { type: String, enum: ['admin', 'operario'], required: true },
   sede:         { type: String, default: null },
   permissions:  { type: [String], default: [] },
+  // 2 = Inicio y Observaciones ya son permisos explícitos (ver migrations.js)
+  permissionsVersion: { type: Number, default: 2 },
 
   active:             { type: Boolean, default: true },
   // Contraseña temporal asignada por un admin: debe cambiarse en el siguiente ingreso

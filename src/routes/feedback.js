@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAuth } from '../middlewares/auth.js'
+import { requireAuth, requireModule } from '../middlewares/auth.js'
 import { ok, notFound } from '../helpers/response.js'
 import Feedback from '../models/Feedback.js'
 import Sede from '../models/Sede.js'
@@ -7,7 +7,7 @@ import Sede from '../models/Sede.js'
 const router = Router()
 
 // GET /api/feedback/mine — retroalimentación recibida por el usuario actual
-router.get('/mine', requireAuth, async (req, res) => {
+router.get('/mine', requireAuth, requireModule('observaciones'), async (req, res) => {
   const filter = { recipientId: req.user.id }
   const [unseen, items, sedes] = await Promise.all([
     Feedback.countDocuments({ ...filter, seenAt: null }),
@@ -32,7 +32,7 @@ router.get('/mine', requireAuth, async (req, res) => {
 })
 
 // PATCH /api/feedback/:id/seen — el destinatario marca la retroalimentación como vista
-router.patch('/:id/seen', requireAuth, async (req, res) => {
+router.patch('/:id/seen', requireAuth, requireModule('observaciones'), async (req, res) => {
   const fb = await Feedback.findOneAndUpdate(
     { _id: req.params.id, recipientId: req.user.id },
     { $set: { seenAt: new Date() } },
@@ -43,7 +43,7 @@ router.patch('/:id/seen', requireAuth, async (req, res) => {
 })
 
 // PATCH /api/feedback/:id/resolve — el destinatario la marca como corregida ({ resolved: false } la reabre)
-router.patch('/:id/resolve', requireAuth, async (req, res) => {
+router.patch('/:id/resolve', requireAuth, requireModule('observaciones'), async (req, res) => {
   const resolved = req.body?.resolved !== false
   const now = new Date()
   const fb = await Feedback.findOne({ _id: req.params.id, recipientId: req.user.id }).catch(() => null)

@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAuth, requireAdmin } from '../middlewares/auth.js'
+import { requireAuth, requireModule } from '../middlewares/auth.js'
 import { ok, created, notFound, badRequest } from '../helpers/response.js'
 import Sede from '../models/Sede.js'
 
@@ -22,7 +22,7 @@ async function nextSedeCode() {
 }
 
 // POST /api/sedes
-router.post('/', requireAuth, requireAdmin, async (req, res) => {
+router.post('/', requireAuth, requireModule('sedes'), async (req, res) => {
   const { name, city, manager } = req.body
   if (!name?.trim() || !city?.trim() || !manager?.trim())
     return badRequest(res, 'Faltan campos requeridos')
@@ -36,7 +36,7 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 })
 
 // PATCH /api/sedes/:code
-router.patch('/:code', requireAuth, requireAdmin, async (req, res) => {
+router.patch('/:code', requireAuth, requireModule('sedes'), async (req, res) => {
   const sede = await Sede.findOne({ code: req.params.code.toUpperCase() })
   if (!sede) return notFound(res, 'Sede no encontrada')
   const { name, city, manager } = req.body
@@ -48,7 +48,7 @@ router.patch('/:code', requireAuth, requireAdmin, async (req, res) => {
 })
 
 // DELETE /api/sedes/:code
-router.delete('/:code', requireAuth, requireAdmin, async (req, res) => {
+router.delete('/:code', requireAuth, requireModule('sedes'), async (req, res) => {
   const sede = await Sede.findOneAndDelete({ code: req.params.code.toUpperCase() })
   if (!sede) return notFound(res, 'Sede no encontrada')
   ok(res, { message: 'Sede eliminada' })

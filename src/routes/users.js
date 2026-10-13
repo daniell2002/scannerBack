@@ -1,8 +1,8 @@
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import User from '../models/User.js'
-import { MODULES, requireAuth, requireAdmin } from '../middlewares/auth.js'
-import { ok, created, notFound, badRequest } from '../helpers/response.js'
+import { MODULES, requireAuth, requireModule } from '../middlewares/auth.js'
+import { ok, created, notFound, badRequest, forbidden } from '../helpers/response.js'
 import {
   normalizeEmail, isValidEmail, emailTaken, usernameFromEmail,
   generateTempPassword, passwordError, publicUser,
@@ -18,9 +18,32 @@ const sanitizePermissions = (permissions) =>
     : []
 
 const isSelf = (req) => String(req.user.id) === String(req.params.id)
+const isAdminReq = (req) => req.user.role === 'admin'
+
+/*
+ * Delegación: quien tiene el módulo "usuarios" sin ser administrador solo
+ * gestiona operarios de su propia sede y no puede otorgar módulos que él no
+ * tiene. Así nadie puede darse (ni dar) más acceso del que ya tiene.
+ */
+function delegationError(req, { role, sede, permissions } = {}, target = null) {
+  if (isAdminReq(req)) return null
+  if (role === 'admin' || target?.role === 'admin')
+    return 'Solo un administrador puede gestionar cuentas de administrador'
+  if (target && target.sede !== req.user.sede)
+    return 'Solo puedes gestionar operarios de tu sede'
+  if (sede && sede !== req.user.sede)
+    return 'Solo puedes asignar usuarios a tu propia sede'
+  if (Array.isArray(permissions)) {
+    const had = target?.permissions || []
+    const added = permissions.filter(p => !had.includes(p))
+    const notOwned = added.filter(p => !(req.user.permissions || []).includes(p))
+    if (notOwned.length) return `No puedes otorgar módulos que no tienes: ${notOwned.join(', ')}`
+  }
+  return null
+}
 
 // GET /api/users
-router.get('/', requireAuth, requireAdmin, async (_req, res) => {
+router.get('/', requireAuth, requireModule('usuarios'), async (_req, res) => {
   const users = await User.find().sort('name')
   ok(res, users.map(publicUser))
 })
@@ -28,7 +51,7 @@ router.get('/', requireAuth, requireAdmin, async (_req, res) => {
 // POST /api/users — crea el usuario con su correo.
 // Sin contraseña → se genera una temporal y se devuelve UNA sola vez (tempPassword).
 // En ambos casos el usuario debe cambiarla en su primer ingreso.
-router.post('/', requireAuth, requireAdmin, async (req, res) => {
+router.post('/', requireAuth, requireModule('usuarios'), async (req, res) => {
   const { name, role, sede, permissions } = req.body
   const email    = normalizeEmail(req.body.email)
   const password = req.body.password?.trim()
@@ -39,6 +62,9 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
   if (email && !isValidEmail(email)) return badRequest(res, 'Ingresa un correo válido')
   if (email && await emailTaken(email)) return badRequest(res, 'Ya existe un usuario con ese correo')
   if (role === 'operario' && !sede) return badRequest(res, 'El operario debe tener una sede asignada')
+
+  const delegErr = delegationError(req, { role, sede, permissions: sanitizePermissions(permissions) })
+  if (delegErr) return forbidden(res, delegErr)
 
   if (password) {
     const pwdErr = passwordError(password)
@@ -65,13 +91,18 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 })
 
 // PATCH /api/users/:id — nombre, correo, rol, sede, permisos y estado
-router.patch('/:id', requireAuth, requireAdmin, async (req, res) => {
+router.patch('/:id', requireAuth, requireModule('usuarios'), async (req, res) => {
   const { name, role, sede, password, permissions, active } = req.body
 
   if (role === 'operario' && !sede)
     return badRequest(res, 'El operario debe tener una sede asignada')
-  if (isSelf(req) && (active === false || role === 'operario'))
+  if (isSelf(req) && (active === false || (isAdminReq(req) && role === 'operario')))
     return badRequest(res, 'No puedes desactivar ni quitarte el rol de administrador a ti mismo')
+
+  const target = await User.findById(req.params.id).catch(() => null)
+  if (!target) return notFound(res, 'Usuario no encontrado')
+  const delegErr = delegationError(req, { role, sede, permissions: Array.isArray(permissions) ? sanitizePermissions(permissions) : undefined }, target)
+  if (delegErr) return forbidden(res, delegErr)
 
   const updates = {}
   if (name?.trim()) updates.name = name.trim()
@@ -108,7 +139,12 @@ router.patch('/:id', requireAuth, requireAdmin, async (req, res) => {
 })
 
 // POST /api/users/:id/reset-password — genera una contraseña temporal nueva
-router.post('/:id/reset-password', requireAuth, requireAdmin, async (req, res) => {
+router.post('/:id/reset-password', requireAuth, requireModule('usuarios'), async (req, res) => {
+  const target = await User.findById(req.params.id).catch(() => null)
+  if (!target) return notFound(res, 'Usuario no encontrado')
+  const delegErr = delegationError(req, {}, target)
+  if (delegErr) return forbidden(res, delegErr)
+
   const tempPassword = generateTempPassword()
   const user = await User.findByIdAndUpdate(
     req.params.id,
@@ -121,10 +157,14 @@ router.post('/:id/reset-password', requireAuth, requireAdmin, async (req, res) =
 })
 
 // DELETE /api/users/:id
-router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
+router.delete('/:id', requireAuth, requireModule('usuarios'), async (req, res) => {
   if (isSelf(req)) return badRequest(res, 'No puedes eliminar tu propia cuenta')
-  const user = await User.findByIdAndDelete(req.params.id)
-  if (!user) return notFound(res, 'Usuario no encontrado')
+  const target = await User.findById(req.params.id).catch(() => null)
+  if (!target) return notFound(res, 'Usuario no encontrado')
+  const delegErr = delegationError(req, {}, target)
+  if (delegErr) return forbidden(res, delegErr)
+
+  await target.deleteOne()
   ok(res, { message: 'Usuario eliminado' })
 })
 
