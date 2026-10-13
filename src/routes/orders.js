@@ -1,9 +1,11 @@
 import { Router } from 'express'
 import { requireAuth, requireAdmin, requireModule } from '../middlewares/auth.js'
-import { uploadPhoto } from '../middlewares/upload.js'
+import { uploadPhoto, uploadEvidence, discardUpload, MAX_ORDER_PHOTOS } from '../middlewares/upload.js'
 import { ok, created, notFound, forbidden, badRequest } from '../helpers/response.js'
 import { startOfToday, startOfTomorrow } from '../helpers/date.js'
 import Order from '../models/Order.js'
+import Feedback from '../models/Feedback.js'
+import User from '../models/User.js'
 
 const router = Router()
 
@@ -45,6 +47,33 @@ router.get('/', requireAuth, async (req, res) => {
   ok(res, orders.map(o => o.toAPI()))
 })
 
+// GET /api/orders/pending-review — órdenes que llegaron y el admin no ha revisado
+router.get('/pending-review', requireAuth, requireAdmin, async (_req, res) => {
+  const filter = { pendingReview: true }
+  const [total, orders] = await Promise.all([
+    Order.countDocuments(filter),
+    Order.find(filter).sort({ scannedAt: -1 }).limit(30),
+  ])
+  ok(res, { total, orders: orders.map(o => o.toAPI()) })
+})
+
+// PATCH /api/orders/pending-review — marcar todas como revisadas
+router.patch('/pending-review', requireAuth, requireAdmin, async (_req, res) => {
+  const { modifiedCount } = await Order.updateMany({ pendingReview: true }, { pendingReview: false })
+  ok(res, { updated: modifiedCount })
+})
+
+// PATCH /api/orders/:code/review — marcar una orden como revisada
+router.patch('/:code/review', requireAuth, requireAdmin, async (req, res) => {
+  const order = await Order.findOneAndUpdate(
+    { code: req.params.code.toUpperCase() },
+    { pendingReview: false },
+    { new: true },
+  )
+  if (!order) return notFound(res, 'Orden no encontrada')
+  ok(res, order.toAPI())
+})
+
 // GET /api/orders/:code
 router.get('/:code', requireAuth, async (req, res) => {
   const order = await Order.findOne({ code: req.params.code.toUpperCase() })
@@ -57,31 +86,61 @@ router.get('/:code', requireAuth, async (req, res) => {
 })
 
 // POST /api/orders — crear orden manualmente (admin) o registrar desde scanner
-router.post('/', requireAuth, requireModule('scanner'), uploadPhoto.single('photo'), async (req, res) => {
-  const { code, product, sede, operator, line, batch, quantity, priority } = req.body
+// Fotos: 'photos' (varias, web y app actuales) o 'photo' (una, clientes antiguos)
+const orderPhotos = uploadPhoto.fields([
+  { name: 'photos', maxCount: MAX_ORDER_PHOTOS },
+  { name: 'photo',  maxCount: 1 },
+])
 
-  if (!code?.trim())    return badRequest(res, 'El código es requerido')
-  if (!product?.trim()) return badRequest(res, 'El producto es requerido')
+router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req, res) => {
+  const { code, product, sede, operator, line, batch, quantity, priority } = req.body
+  const files  = [...(req.files?.photos || []), ...(req.files?.photo || [])]
+  const reject = (msg) => { files.forEach(discardUpload); return badRequest(res, msg) }
+
+  if (!code?.trim())    return reject('El código es requerido')
+  if (!product?.trim()) return reject('El cliente es requerido')
 
   if (req.user.role === 'operario' && !req.user.sede)
-    return badRequest(res, 'El operario no tiene sede asignada. Contacta a un administrador.')
+    return reject('El operario no tiene sede asignada. Contacta a un administrador.')
 
   if (req.user.role !== 'operario' && !sede)
-    return badRequest(res, 'La sede es requerida')
+    return reject('La sede es requerida')
 
   const normCode = code.trim().toUpperCase()
   const sedeCode = req.user.role === 'operario' ? req.user.sede : sede
   const opName   = operator?.trim() || req.user.name || 'Sin asignar'
-  const photoUrl = req.file ? `/uploads/orders/${req.file.filename}` : undefined
+  const photos   = files.map(f => `/uploads/orders/${f.filename}`)
+  const photoUrl = photos[0]
 
   const existing = await Order.findOne({ code: normCode })
+
+  // Duplicado: no se sobreescribe en silencio, el cliente debe confirmar el reenvío.
+  const confirmed = String(req.body.confirmDuplicate) === 'true'
+  if (existing && !confirmed) {
+    files.forEach(discardUpload)
+    const sameUser = existing.operatorId
+      ? String(existing.operatorId) === String(req.user.id)
+      : existing.operator === req.user.name
+    return res.status(409).json({
+      code:     'DUPLICATE',
+      message:  sameUser
+        ? `Ya registraste la orden ${normCode} anteriormente.`
+        : `La orden ${normCode} ya fue registrada por ${existing.operator}.`,
+      sameUser,
+      order:    existing.toAPI(),
+    })
+  }
+
   if (existing) {
     if (req.user.role === 'operario') existing.sede = req.user.sede
     existing.operator = opName
-    if (photoUrl) existing.photoUrl = photoUrl
+    existing.operatorId = req.user.id
+    // Nuevo registro: las fotos nuevas reemplazan a las anteriores
+    if (photos.length) { existing.photos = photos; existing.photoUrl = photoUrl }
     existing.scheduledAt = new Date()
     existing.scannedAt   = new Date()
     existing.scanCount  += 1
+    existing.pendingReview = req.user.role !== 'admin'
     existing.updatedAt   = new Date()
     await existing.save()
     return ok(res, existing.toAPI())
@@ -94,13 +153,16 @@ router.post('/', requireAuth, requireModule('scanner'), uploadPhoto.single('phot
     batch:       batch?.trim() || `BT-${Date.now().toString().slice(-6)}`,
     sede:        sedeCode,
     operator:    opName,
+    operatorId:  req.user.id,
     quantity:    Number(quantity) || 0,
     priority:    priority || 'Media',
     photoUrl:    photoUrl || null,
+    photos,
     scheduledAt: new Date(),
     updatedAt:   new Date(),
     scannedAt:   new Date(),
     scanCount:   1,
+    pendingReview: req.user.role !== 'admin',
   })
 
   created(res, order.toAPI())
@@ -146,6 +208,60 @@ router.patch('/:code/scan', requireAuth, requireModule('scanner'), async (req, r
   await order.save()
 
   ok(res, order.toAPI())
+})
+
+// GET /api/orders/:code/feedback — retroalimentación de una orden
+router.get('/:code/feedback', requireAuth, async (req, res) => {
+  const order = await Order.findOne({ code: req.params.code.toUpperCase() })
+  if (!order) return notFound(res, 'Orden no encontrada')
+
+  if (req.user.role === 'operario' && order.sede !== req.user.sede)
+    return forbidden(res, 'Sin acceso a esta orden')
+
+  const items = await Feedback.find({ order: order._id }).sort({ createdAt: -1 })
+  ok(res, items.map(f => f.toAPI()))
+})
+
+// POST /api/orders/:code/feedback — el admin deja comentario + evidencias al operario
+router.post('/:code/feedback', requireAuth, requireAdmin, uploadEvidence.array('evidences', 5), async (req, res) => {
+  const order = await Order.findOne({ code: req.params.code.toUpperCase() })
+  if (!order) {
+    req.files?.forEach(discardUpload)
+    return notFound(res, 'Orden no encontrada')
+  }
+
+  const comment = req.body.comment?.trim()
+  if (!comment) {
+    req.files?.forEach(discardUpload)
+    return badRequest(res, 'El comentario es requerido')
+  }
+
+  // Órdenes antiguas no tienen operatorId: se busca al operario por nombre.
+  let recipientId = order.operatorId
+  if (!recipientId) {
+    const u = await User.findOne({ name: order.operator, role: 'operario' })
+    recipientId = u?._id || null
+  }
+
+  const feedback = await Feedback.create({
+    order:         order._id,
+    orderCode:     order.code,
+    sede:          order.sede,
+    authorId:      req.user.id,
+    authorName:    req.user.name,
+    recipientId,
+    recipientName: order.operator,
+    comment,
+    evidences:     (req.files || []).map(f => `/uploads/feedback/${f.filename}`),
+  })
+
+  // Dejar retroalimentación implica que la orden ya fue revisada.
+  if (order.pendingReview) {
+    order.pendingReview = false
+    await order.save()
+  }
+
+  created(res, { ...feedback.toAPI(), delivered: Boolean(recipientId) })
 })
 
 // DELETE /api/orders/:code — eliminar orden (solo admin)

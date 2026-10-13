@@ -11,11 +11,15 @@ const orderSchema = new Schema({
   quantity:    { type: Number, default: 0 },
   completed:   { type: Number, default: 0 },
   operator:    { type: String, default: 'Sin asignar' },
-  photoUrl:    { type: String, default: null },
+  operatorId:  { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  photoUrl:    { type: String, default: null }, // primera foto (compatibilidad)
+  photos:      { type: [String], default: [] },  // todas las fotos de la orden
   scheduledAt: { type: Date, required: true },
   updatedAt:   { type: Date, default: Date.now },
   scannedAt:   { type: Date, default: null },
   scanCount:   { type: Number, default: 0 },
+  // true cuando un operario registra/re-escanea la orden y el admin aún no la revisa
+  pendingReview: { type: Boolean, default: false },
 }, { versionKey: false })
 
 // Helper para dar forma al JSON que espera el frontend
@@ -32,11 +36,15 @@ orderSchema.methods.toAPI = function () {
     quantity:    this.quantity,
     completed:   this.completed,
     operator:    this.operator,
-    photoUrl:    this.photoUrl,
+    operatorId:  this.operatorId,
+    photoUrl:    this.photos?.[0] || this.photoUrl,
+    // Órdenes antiguas solo tienen photoUrl
+    photos:      this.photos?.length ? this.photos : (this.photoUrl ? [this.photoUrl] : []),
     scheduledAt: this.scheduledAt,
     updatedAt:   this.updatedAt,
     scannedAt:   this.scannedAt,
     scanCount:   this.scanCount,
+    pendingReview: this.pendingReview,
   }
 }
 

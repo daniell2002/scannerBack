@@ -7,6 +7,7 @@ import authRoutes     from './routes/auth.js'
 import sedesRoutes    from './routes/sedes.js'
 import ordersRoutes   from './routes/orders.js'
 import usersRoutes    from './routes/users.js'
+import feedbackRoutes from './routes/feedback.js'
 
 const app  = express()
 const PORT = process.env.PORT || 3000
@@ -36,11 +37,22 @@ app.use('/api/auth',   authRoutes)
 app.use('/api/sedes',  sedesRoutes)
 app.use('/api/orders', ordersRoutes)
 app.use('/api/users',  usersRoutes)
+app.use('/api/feedback', feedbackRoutes)
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }))
 
 app.use((_, res) => res.status(404).json({ message: 'Ruta no encontrada' }))
 app.use((err, _req, res, _next) => {
+  // Errores de subida de archivos (multer / filtro de imágenes) → 400 legible
+  if (err?.name === 'MulterError') {
+    const msg = err.code === 'LIMIT_FILE_SIZE'  ? 'Cada imagen debe pesar máximo 8 MB.'
+              : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE' ? 'Se enviaron demasiadas imágenes (máx. 10 por orden y 5 por retroalimentación).'
+              : 'No fue posible subir el archivo.'
+    return res.status(400).json({ message: msg })
+  }
+  if (err?.message === 'El archivo debe ser una imagen.')
+    return res.status(400).json({ message: err.message })
+
   console.error(err)
   res.status(500).json({ message: 'Error interno del servidor' })
 })
