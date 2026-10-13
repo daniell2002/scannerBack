@@ -7,7 +7,8 @@ const userSchema = new Schema({
   email:        { type: String, default: null, lowercase: true, trim: true },
   passwordHash: { type: String, required: true },
   name:         { type: String, required: true },
-  role:         { type: String, enum: ['admin', 'operario'], required: true },
+  // supervisor: jefe de una sede — ve las órdenes de todo su equipo, las revisa y comenta
+  role:         { type: String, enum: ['admin', 'supervisor', 'operario'], required: true },
   sede:         { type: String, default: null },
   permissions:  { type: [String], default: [] },
   // 2 = Inicio y Observaciones ya son permisos explícitos (ver migrations.js)

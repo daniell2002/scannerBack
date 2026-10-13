@@ -27,8 +27,9 @@ const isAdminReq = (req) => req.user.role === 'admin'
  */
 function delegationError(req, { role, sede, permissions } = {}, target = null) {
   if (isAdminReq(req)) return null
-  if (role === 'admin' || target?.role === 'admin')
-    return 'Solo un administrador puede gestionar cuentas de administrador'
+  // Solo el admin crea o gestiona administradores y supervisores
+  if ((role && role !== 'operario') || (target && target.role !== 'operario'))
+    return 'Solo un administrador puede gestionar administradores y supervisores'
   if (target && target.sede !== req.user.sede)
     return 'Solo puedes gestionar operarios de tu sede'
   if (sede && sede !== req.user.sede)
@@ -61,7 +62,7 @@ router.post('/', requireAuth, requireModule('usuarios'), async (req, res) => {
   if (!email && !req.body.username?.trim()) return badRequest(res, 'El correo es requerido')
   if (email && !isValidEmail(email)) return badRequest(res, 'Ingresa un correo válido')
   if (email && await emailTaken(email)) return badRequest(res, 'Ya existe un usuario con ese correo')
-  if (role === 'operario' && !sede) return badRequest(res, 'El operario debe tener una sede asignada')
+  if (role !== 'admin' && !sede) return badRequest(res, 'El operario o supervisor debe tener una sede asignada')
 
   const delegErr = delegationError(req, { role, sede, permissions: sanitizePermissions(permissions) })
   if (delegErr) return forbidden(res, delegErr)
@@ -82,7 +83,7 @@ router.post('/', requireAuth, requireModule('usuarios'), async (req, res) => {
     passwordHash:       bcrypt.hashSync(tempPassword, 10),
     name:               name.trim(),
     role,
-    sede:               role === 'operario' ? (sede || null) : null,
+    sede:               role !== 'admin' ? (sede || null) : null,
     permissions:        sanitizePermissions(permissions),
     mustChangePassword: true,
   })
@@ -94,9 +95,9 @@ router.post('/', requireAuth, requireModule('usuarios'), async (req, res) => {
 router.patch('/:id', requireAuth, requireModule('usuarios'), async (req, res) => {
   const { name, role, sede, password, permissions, active } = req.body
 
-  if (role === 'operario' && !sede)
-    return badRequest(res, 'El operario debe tener una sede asignada')
-  if (isSelf(req) && (active === false || (isAdminReq(req) && role === 'operario')))
+  if (role && role !== 'admin' && !sede)
+    return badRequest(res, 'El operario o supervisor debe tener una sede asignada')
+  if (isSelf(req) && (active === false || (isAdminReq(req) && role && role !== 'admin')))
     return badRequest(res, 'No puedes desactivar ni quitarte el rol de administrador a ti mismo')
 
   const target = await User.findById(req.params.id).catch(() => null)

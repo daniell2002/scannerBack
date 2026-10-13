@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAuth, requireAdmin, requireModule } from '../middlewares/auth.js'
+import { requireAuth, requireAdmin, requireModule, requireReviewer } from '../middlewares/auth.js'
 import { uploadPhoto, uploadEvidence, discardUpload, MAX_ORDER_PHOTOS } from '../middlewares/upload.js'
 import { ok, created, notFound, forbidden, badRequest } from '../helpers/response.js'
 import { startOfToday, startOfTomorrow } from '../helpers/date.js'
@@ -9,12 +9,15 @@ import User from '../models/User.js'
 
 const router = Router()
 
+// El supervisor solo actúa sobre las órdenes de su sede; el admin sobre todas
+const sedeScope = (req) => req.user.role === 'admin' ? {} : { sede: req.user.sede }
+
 // GET /api/orders
 router.get('/', requireAuth, async (req, res) => {
   const { period, sede, status, priority, q } = req.query
   const filter = {}
 
-  if (req.user.role === 'operario' && req.user.sede) {
+  if (req.user.role !== 'admin' && req.user.sede) {
     filter.sede = req.user.sede
   } else if (sede && sede !== 'all') {
     filter.sede = sede
@@ -48,8 +51,8 @@ router.get('/', requireAuth, async (req, res) => {
 })
 
 // GET /api/orders/pending-review — órdenes que llegaron y el admin no ha revisado
-router.get('/pending-review', requireAuth, requireAdmin, async (_req, res) => {
-  const filter = { pendingReview: true }
+router.get('/pending-review', requireAuth, requireReviewer, async (req, res) => {
+  const filter = { pendingReview: true, ...sedeScope(req) }
   const [total, orders] = await Promise.all([
     Order.countDocuments(filter),
     Order.find(filter).sort({ scannedAt: -1 }).limit(30),
@@ -58,15 +61,15 @@ router.get('/pending-review', requireAuth, requireAdmin, async (_req, res) => {
 })
 
 // PATCH /api/orders/pending-review — marcar todas como revisadas
-router.patch('/pending-review', requireAuth, requireAdmin, async (_req, res) => {
-  const { modifiedCount } = await Order.updateMany({ pendingReview: true }, { pendingReview: false })
+router.patch('/pending-review', requireAuth, requireReviewer, async (req, res) => {
+  const { modifiedCount } = await Order.updateMany({ pendingReview: true, ...sedeScope(req) }, { pendingReview: false })
   ok(res, { updated: modifiedCount })
 })
 
 // PATCH /api/orders/:code/review — marcar una orden como revisada
-router.patch('/:code/review', requireAuth, requireAdmin, async (req, res) => {
+router.patch('/:code/review', requireAuth, requireReviewer, async (req, res) => {
   const order = await Order.findOneAndUpdate(
-    { code: req.params.code.toUpperCase() },
+    { code: req.params.code.toUpperCase(), ...sedeScope(req) },
     { pendingReview: false },
     { new: true },
   )
@@ -79,7 +82,7 @@ router.get('/:code', requireAuth, async (req, res) => {
   const order = await Order.findOne({ code: req.params.code.toUpperCase() })
   if (!order) return notFound(res, 'Orden no encontrada')
 
-  if (req.user.role === 'operario' && order.sede !== req.user.sede)
+  if (req.user.role !== 'admin' && order.sede !== req.user.sede)
     return forbidden(res, 'Sin acceso a esta orden')
 
   ok(res, order.toAPI())
@@ -100,14 +103,14 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
   if (!code?.trim())    return reject('El código es requerido')
   if (!product?.trim()) return reject('El cliente es requerido')
 
-  if (req.user.role === 'operario' && !req.user.sede)
+  if (req.user.role !== 'admin' && !req.user.sede)
     return reject('El operario no tiene sede asignada. Contacta a un administrador.')
 
-  if (req.user.role !== 'operario' && !sede)
+  if (req.user.role === 'admin' && !sede)
     return reject('La sede es requerida')
 
   const normCode = code.trim().toUpperCase()
-  const sedeCode = req.user.role === 'operario' ? req.user.sede : sede
+  const sedeCode = req.user.role !== 'admin' ? req.user.sede : sede
   const opName   = operator?.trim() || req.user.name || 'Sin asignar'
   const photos   = files.map(f => `/uploads/orders/${f.filename}`)
   const photoUrl = photos[0]
@@ -132,7 +135,7 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
   }
 
   if (existing) {
-    if (req.user.role === 'operario') existing.sede = req.user.sede
+    if (req.user.role !== 'admin') existing.sede = req.user.sede
     existing.operator = opName
     existing.operatorId = req.user.id
     // Nuevo registro: las fotos nuevas reemplazan a las anteriores
@@ -140,7 +143,7 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
     existing.scheduledAt = new Date()
     existing.scannedAt   = new Date()
     existing.scanCount  += 1
-    existing.pendingReview = req.user.role !== 'admin'
+    existing.pendingReview = req.user.role === 'operario'
     existing.updatedAt   = new Date()
     await existing.save()
     return ok(res, existing.toAPI())
@@ -162,7 +165,7 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
     updatedAt:   new Date(),
     scannedAt:   new Date(),
     scanCount:   1,
-    pendingReview: req.user.role !== 'admin',
+    pendingReview: req.user.role === 'operario',
   })
 
   created(res, order.toAPI())
@@ -199,7 +202,7 @@ router.patch('/:code/scan', requireAuth, requireModule('scanner'), async (req, r
   const order = await Order.findOne({ code: req.params.code.toUpperCase() })
   if (!order) return notFound(res, 'Orden no encontrada')
 
-  if (req.user.role === 'operario' && order.sede !== req.user.sede)
+  if (req.user.role !== 'admin' && order.sede !== req.user.sede)
     return forbidden(res, 'Sin acceso a esta orden')
 
   order.scannedAt  = new Date()
@@ -215,7 +218,7 @@ router.get('/:code/feedback', requireAuth, async (req, res) => {
   const order = await Order.findOne({ code: req.params.code.toUpperCase() })
   if (!order) return notFound(res, 'Orden no encontrada')
 
-  if (req.user.role === 'operario' && order.sede !== req.user.sede)
+  if (req.user.role !== 'admin' && order.sede !== req.user.sede)
     return forbidden(res, 'Sin acceso a esta orden')
 
   const items = await Feedback.find({ order: order._id }).sort({ createdAt: -1 })
@@ -223,8 +226,8 @@ router.get('/:code/feedback', requireAuth, async (req, res) => {
 })
 
 // POST /api/orders/:code/feedback — el admin deja comentario + evidencias al operario
-router.post('/:code/feedback', requireAuth, requireAdmin, uploadEvidence.array('evidences', 5), async (req, res) => {
-  const order = await Order.findOne({ code: req.params.code.toUpperCase() })
+router.post('/:code/feedback', requireAuth, requireReviewer, uploadEvidence.array('evidences', 5), async (req, res) => {
+  const order = await Order.findOne({ code: req.params.code.toUpperCase(), ...sedeScope(req) })
   if (!order) {
     req.files?.forEach(discardUpload)
     return notFound(res, 'Orden no encontrada')

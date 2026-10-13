@@ -46,3 +46,10 @@ export function requireModule(module) {
     return forbidden(res, `Sin acceso al módulo "${module}"`)
   }
 }
+
+// Revisan órdenes y envían observaciones: el admin (todas las sedes) y el supervisor (la suya)
+export const REVIEWER_ROLES = ['admin', 'supervisor']
+export function requireReviewer(req, res, next) {
+  if (REVIEWER_ROLES.includes(req.user?.role)) return next()
+  return forbidden(res, 'Acceso solo para administradores y supervisores')
+}
