@@ -18,7 +18,7 @@ services:
       - MONGO_URI=mongodb://mongo:27017/dniscanner
       - PORT=8080
       - JWT_SECRET=logiconnet_secret_key_2024
-      - FRONTEND_URL=http://lydordenes.online
+      - FRONTEND_URL=https://lydordenes.online,http://lydordenes.online
     ports:
       - "8080:8080"
     volumes:
@@ -34,7 +34,7 @@ services:
     depends_on:
       - backend
     environment:
-      - VITE_API_URL=http://api.lydordenes.online
+      - VITE_API_URL=https://lydordenes.online
     ports:
       - "5173:5173"
     volumes:
