@@ -12,6 +12,8 @@ const feedbackSchema = new Schema({
   comment:       { type: String, required: true },
   evidences:     { type: [String], default: [] },
   seenAt:        { type: Date, default: null },
+  // El operario indica que ya atendió la observación
+  resolvedAt:    { type: Date, default: null },
   createdAt:     { type: Date, default: Date.now },
 }, { versionKey: false })
 
@@ -28,6 +30,7 @@ feedbackSchema.methods.toAPI = function () {
     comment:       this.comment,
     evidences:     this.evidences,
     seenAt:        this.seenAt,
+    resolvedAt:    this.resolvedAt,
     createdAt:     this.createdAt,
   }
 }

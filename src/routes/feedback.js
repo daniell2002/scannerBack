@@ -11,7 +11,7 @@ router.get('/mine', requireAuth, async (req, res) => {
   const filter = { recipientId: req.user.id }
   const [unseen, items, sedes] = await Promise.all([
     Feedback.countDocuments({ ...filter, seenAt: null }),
-    Feedback.find(filter).sort({ createdAt: -1 }).limit(30)
+    Feedback.find(filter).sort({ createdAt: -1 }).limit(200)
       .populate('order', 'product sede scannedAt scheduledAt'),
     Sede.find({}, 'code name'),
   ])
@@ -39,6 +39,19 @@ router.patch('/:id/seen', requireAuth, async (req, res) => {
     { new: true },
   ).catch(() => null)
   if (!fb) return notFound(res, 'Retroalimentación no encontrada')
+  ok(res, fb.toAPI())
+})
+
+// PATCH /api/feedback/:id/resolve — el destinatario la marca como corregida ({ resolved: false } la reabre)
+router.patch('/:id/resolve', requireAuth, async (req, res) => {
+  const resolved = req.body?.resolved !== false
+  const now = new Date()
+  const fb = await Feedback.findOne({ _id: req.params.id, recipientId: req.user.id }).catch(() => null)
+  if (!fb) return notFound(res, 'Retroalimentación no encontrada')
+
+  fb.resolvedAt = resolved ? now : null
+  if (!fb.seenAt) fb.seenAt = now
+  await fb.save()
   ok(res, fb.toAPI())
 })
 
