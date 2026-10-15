@@ -3,7 +3,7 @@ import path from 'path'
 import express from 'express'
 import cors from 'cors'
 import { connectDB }  from './db.js'
-import { migratePermissions } from './migrations.js'
+import { migratePermissions, migrateOperariosToSupervisor } from './migrations.js'
 import authRoutes     from './routes/auth.js'
 import sedesRoutes    from './routes/sedes.js'
 import ordersRoutes   from './routes/orders.js'
@@ -71,6 +71,7 @@ app.use((err, _req, res, _next) => {
 
 connectDB()
   .then(migratePermissions)
+  .then(migrateOperariosToSupervisor)
   .then(() => {
     app.listen(PORT, () => {
       console.log(`\n🚀 Conexa API corriendo en http://localhost:${PORT}`)

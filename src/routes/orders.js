@@ -1,3 +1,4 @@
+import mongoose from 'mongoose'
 import { Router } from 'express'
 import { requireAuth, requireAdmin, requireModule, requireReviewer } from '../middlewares/auth.js'
 import { uploadPhoto, uploadEvidence, discardUpload, MAX_ORDER_PHOTOS } from '../middlewares/upload.js'
@@ -12,9 +13,15 @@ const router = Router()
 // El supervisor solo actúa sobre las órdenes de su sede; el admin sobre todas
 const sedeScope = (req) => req.user.role === 'admin' ? {} : { sede: req.user.sede }
 
+/** Vendedor activo de la sede indicada, o null si no corresponde. */
+const findVendor = (id, sede) =>
+  mongoose.isValidObjectId(id)
+    ? User.findOne({ _id: id, role: 'vendedor', sede, active: { $ne: false } }, 'name')
+    : null
+
 // GET /api/orders
 router.get('/', requireAuth, async (req, res) => {
-  const { period, sede, status, priority, q } = req.query
+  const { period, sede, status, priority, q, attendedBy } = req.query
   const filter = {}
 
   if (req.user.role !== 'admin' && req.user.sede) {
@@ -37,12 +44,18 @@ router.get('/', requireAuth, async (req, res) => {
 
   if (status   && status   !== 'all') filter.status   = status
   if (priority && priority !== 'all') filter.priority = priority
+  // Filtro por vendedor (id) que atendió la orden
+  if (attendedBy && attendedBy !== 'all') {
+    if (!mongoose.isValidObjectId(attendedBy)) return badRequest(res, 'Vendedor no válido')
+    filter.attendedById = attendedBy
+  }
 
   if (q) filter.$or = [
     { code:     { $regex: q, $options: 'i' } },
     { product:  { $regex: q, $options: 'i' } },
     { batch:    { $regex: q, $options: 'i' } },
     { operator: { $regex: q, $options: 'i' } },
+    { attendedBy: { $regex: q, $options: 'i' } },
     { line:     { $regex: q, $options: 'i' } },
   ]
 
@@ -96,7 +109,7 @@ const orderPhotos = uploadPhoto.fields([
 ])
 
 router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req, res) => {
-  const { code, product, sede, operator, line, batch, quantity, priority } = req.body
+  const { code, product, sede, operator, line, batch, quantity, priority, attendedById } = req.body
   const files  = [...(req.files?.photos || []), ...(req.files?.photo || [])]
   const reject = (msg) => { files.forEach(discardUpload); return badRequest(res, msg) }
 
@@ -104,13 +117,18 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
   if (!product?.trim()) return reject('El cliente es requerido')
 
   if (req.user.role !== 'admin' && !req.user.sede)
-    return reject('El operario no tiene sede asignada. Contacta a un administrador.')
+    return reject('Tu usuario no tiene sede asignada. Contacta a un administrador.')
 
   if (req.user.role === 'admin' && !sede)
     return reject('La sede es requerida')
 
   const normCode = code.trim().toUpperCase()
   const sedeCode = req.user.role !== 'admin' ? req.user.sede : sede
+
+  // "Atendido por": un vendedor activo de la sede donde se registra la orden
+  if (!attendedById) return reject('Selecciona el vendedor que atendió la orden')
+  const vendor = await findVendor(attendedById, sedeCode)
+  if (!vendor) return reject('El vendedor seleccionado no existe, está inactivo o no pertenece a la sede')
   const opName   = operator?.trim() || req.user.name || 'Sin asignar'
   const photos   = files.map(f => `/uploads/orders/${f.filename}`)
   const photoUrl = photos[0]
@@ -138,12 +156,14 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
     if (req.user.role !== 'admin') existing.sede = req.user.sede
     existing.operator = opName
     existing.operatorId = req.user.id
+    existing.attendedBy   = vendor.name
+    existing.attendedById = vendor._id
     // Nuevo registro: las fotos nuevas reemplazan a las anteriores
     if (photos.length) { existing.photos = photos; existing.photoUrl = photoUrl }
     existing.scheduledAt = new Date()
     existing.scannedAt   = new Date()
     existing.scanCount  += 1
-    existing.pendingReview = req.user.role === 'operario'
+    existing.pendingReview = req.user.role !== 'admin'
     existing.updatedAt   = new Date()
     await existing.save()
     return ok(res, existing.toAPI())
@@ -157,6 +177,8 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
     sede:        sedeCode,
     operator:    opName,
     operatorId:  req.user.id,
+    attendedBy:   vendor.name,
+    attendedById: vendor._id,
     quantity:    Number(quantity) || 0,
     priority:    priority || 'Media',
     photoUrl:    photoUrl || null,
@@ -165,7 +187,7 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
     updatedAt:   new Date(),
     scannedAt:   new Date(),
     scanCount:   1,
-    pendingReview: req.user.role === 'operario',
+    pendingReview: req.user.role !== 'admin',
   })
 
   created(res, order.toAPI())
@@ -176,7 +198,7 @@ router.patch('/:code', requireAuth, requireAdmin, async (req, res) => {
   const order = await Order.findOne({ code: req.params.code.toUpperCase() })
   if (!order) return notFound(res, 'Orden no encontrada')
 
-  const { product, line, batch, status, priority, sede, quantity, completed, operator } = req.body
+  const { product, line, batch, status, priority, sede, quantity, completed, operator, attendedById } = req.body
   const updates = {}
 
   if (product   !== undefined) updates.product   = product.trim()
@@ -188,6 +210,12 @@ router.patch('/:code', requireAuth, requireAdmin, async (req, res) => {
   if (quantity  !== undefined) updates.quantity  = Number(quantity)
   if (completed !== undefined) updates.completed = Number(completed)
   if (operator  !== undefined) updates.operator  = operator.trim()
+  if (attendedById !== undefined) {
+    const vendor = await findVendor(attendedById, updates.sede ?? order.sede)
+    if (!vendor) return badRequest(res, 'El vendedor seleccionado no existe, está inactivo o no pertenece a la sede')
+    updates.attendedBy   = vendor.name
+    updates.attendedById = vendor._id
+  }
 
   updates.updatedAt = new Date()
 
@@ -225,7 +253,7 @@ router.get('/:code/feedback', requireAuth, async (req, res) => {
   ok(res, items.map(f => f.toAPI()))
 })
 
-// POST /api/orders/:code/feedback — el admin deja comentario + evidencias al operario
+// POST /api/orders/:code/feedback — el admin deja comentario + evidencias a quien registró la orden
 router.post('/:code/feedback', requireAuth, requireReviewer, uploadEvidence.array('evidences', 5), async (req, res) => {
   const order = await Order.findOne({ code: req.params.code.toUpperCase(), ...sedeScope(req) })
   if (!order) {
@@ -239,10 +267,10 @@ router.post('/:code/feedback', requireAuth, requireReviewer, uploadEvidence.arra
     return badRequest(res, 'El comentario es requerido')
   }
 
-  // Órdenes antiguas no tienen operatorId: se busca al operario por nombre.
+  // Órdenes antiguas no tienen operatorId: se busca al supervisor por nombre.
   let recipientId = order.operatorId
   if (!recipientId) {
-    const u = await User.findOne({ name: order.operator, role: 'operario' })
+    const u = await User.findOne({ name: order.operator, role: 'supervisor' })
     recipientId = u?._id || null
   }
 

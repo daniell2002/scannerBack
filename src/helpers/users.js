@@ -19,6 +19,16 @@ export async function usernameFromEmail(email) {
   return candidate
 }
 
+/** Usuario interno de un vendedor (no tiene correo): "María López" → "vendedor.maria.lopez". */
+export async function usernameFromName(name) {
+  const slug = name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .trim().replace(/[^a-z0-9]+/g, '.').replace(/^\.|\.$/g, '') || 'vendedor'
+  const base = `vendedor.${slug}`
+  let candidate = base
+  for (let n = 2; await User.exists({ username: candidate }); n++) candidate = `${base}${n}`
+  return candidate
+}
+
 /** Contraseña temporal legible: sin caracteres ambiguos (0/O, 1/l/I). */
 export function generateTempPassword(length = 12) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
@@ -32,6 +42,14 @@ export const passwordError = (password) =>
   !password || password.length < MIN_PASSWORD
     ? `La contraseña debe tener al menos ${MIN_PASSWORD} caracteres`
     : null
+
+/** Datos del vendedor para el select "Atendido por". */
+export const publicVendor = (u) => ({
+  id:     u._id,
+  name:   u.name,
+  sede:   u.sede,
+  active: u.active !== false,
+})
 
 /** Datos públicos del usuario (sin hash). */
 export const publicUser = (u) => ({

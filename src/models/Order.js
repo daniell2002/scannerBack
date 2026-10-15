@@ -12,15 +12,20 @@ const orderSchema = new Schema({
   completed:   { type: Number, default: 0 },
   operator:    { type: String, default: 'Sin asignar' },
   operatorId:  { type: Schema.Types.ObjectId, ref: 'User', default: null },
-  photoUrl:    { type: String, default: null }, // primera foto (compatibilidad)
+  // Vendedor que atendió al cliente; lo elige quien registra la orden
+  attendedBy:   { type: String, default: '' },
+  attendedById: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  photoUrl:   { type: String, default: null }, // primera foto (compatibilidad)
   photos:      { type: [String], default: [] },  // todas las fotos de la orden
   scheduledAt: { type: Date, required: true },
   updatedAt:   { type: Date, default: Date.now },
   scannedAt:   { type: Date, default: null },
   scanCount:   { type: Number, default: 0 },
-  // true cuando un operario registra/re-escanea la orden y el admin aún no la revisa
+  // true cuando un supervisor registra/re-escanea la orden y el admin aún no la revisa
   pendingReview: { type: Boolean, default: false },
 }, { versionKey: false })
+
+orderSchema.index({ attendedById: 1 })
 
 // Helper para dar forma al JSON que espera el frontend
 orderSchema.methods.toAPI = function () {
@@ -37,6 +42,8 @@ orderSchema.methods.toAPI = function () {
     completed:   this.completed,
     operator:    this.operator,
     operatorId:  this.operatorId,
+    attendedBy:   this.attendedBy || '',
+    attendedById: this.attendedById,
     photoUrl:    this.photos?.[0] || this.photoUrl,
     // Órdenes antiguas solo tienen photoUrl
     photos:      this.photos?.length ? this.photos : (this.photoUrl ? [this.photoUrl] : []),

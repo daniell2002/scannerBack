@@ -32,8 +32,8 @@ export default {
       '',
       '**Roles y alcance**',
       '- `admin`: todo, en todas las sedes.',
-      '- `supervisor`: ve, revisa y comenta las órdenes de **su sede**.',
-      '- `operario`: registra órdenes y ve solo las suyas.',
+      '- `supervisor`: registra y ve las órdenes de **su sede**, y atiende las observaciones del admin.',
+      '- `vendedor`: **no ingresa al sistema**; solo se registra para elegirlo en "Atendido por" al registrar una orden.',
       '',
       `**Módulos asignables:** ${MODULES.map(m => `\`${m}\``).join(', ')}. El admin los tiene todos.`,
     ].join('\n'),
@@ -42,10 +42,10 @@ export default {
   tags: [
     { name: 'Sistema', description: 'Estado del servicio' },
     { name: 'Autenticación', description: 'Ingreso, primer admin y cuenta propia' },
-    { name: 'Usuarios', description: 'Requiere el módulo `usuarios`. Quien no es admin solo gestiona operarios de su sede.' },
+    { name: 'Usuarios', description: 'Requiere el módulo `usuarios`. Quien no es admin solo gestiona vendedores de su sede.' },
     { name: 'Sedes', description: 'Lectura para todos; crear/editar/eliminar requiere el módulo `sedes`.' },
     { name: 'Órdenes', description: 'Registro, consulta y revisión de órdenes de producción.' },
-    { name: 'Observaciones', description: 'Retroalimentación del admin/supervisor al operario.' },
+    { name: 'Observaciones', description: 'Retroalimentación del admin al supervisor que registró la orden.' },
   ],
   components: {
     securitySchemes: {
@@ -53,7 +53,11 @@ export default {
     },
     schemas: {
       Message: { type: 'object', properties: { message: { type: 'string' } }, example: { message: 'Descripción del resultado o del error' } },
-      Role: { type: 'string', enum: ['admin', 'supervisor', 'operario'] },
+      Role: { type: 'string', enum: ['admin', 'supervisor', 'vendedor'] },
+      Vendor: {
+        type: 'object',
+        properties: { id: { type: 'string' }, name: { type: 'string' }, sede: { type: 'string' }, active: { type: 'boolean' } },
+      },
       Module: { type: 'string', enum: MODULES },
       SessionUser: {
         type: 'object',
@@ -92,14 +96,15 @@ export default {
         properties: {
           id: { type: 'string' }, code: { type: 'string', example: '23643268' },
           product: { type: 'string', description: 'Cliente', example: 'Ferretería El Tornillo' },
-          sede: { type: 'string', example: 'SEDE-001' }, operator: { type: 'string' }, operatorId: { type: 'string', nullable: true },
+          sede: { type: 'string', example: 'SEDE-001' }, operator: { type: 'string', description: 'Quien registró la orden' }, operatorId: { type: 'string', nullable: true },
+          attendedBy: { type: 'string', description: 'Vendedor que atendió al cliente' }, attendedById: { type: 'string', nullable: true },
           photos: { type: 'array', items: { type: 'string', example: '/uploads/orders/1730000000-123.jpg' } },
           photoUrl: { type: 'string', nullable: true },
           status: { type: 'string' }, priority: { type: 'string' }, line: { type: 'string' }, batch: { type: 'string' },
           quantity: { type: 'number' }, completed: { type: 'number' },
           scheduledAt: { type: 'string', format: 'date-time' }, scannedAt: { type: 'string', format: 'date-time', nullable: true },
           updatedAt: { type: 'string', format: 'date-time' }, scanCount: { type: 'integer' },
-          pendingReview: { type: 'boolean', description: 'true = el admin/supervisor aún no la revisa' },
+          pendingReview: { type: 'boolean', description: 'true = el admin aún no la revisa' },
         },
       },
       Feedback: {
@@ -109,7 +114,7 @@ export default {
           authorName: { type: 'string' }, recipientName: { type: 'string' }, comment: { type: 'string' },
           evidences: { type: 'array', items: { type: 'string' } },
           seenAt: { type: 'string', format: 'date-time', nullable: true },
-          resolvedAt: { type: 'string', format: 'date-time', nullable: true, description: 'Cuándo el operario la marcó como corregida' },
+          resolvedAt: { type: 'string', format: 'date-time', nullable: true, description: 'Cuándo el supervisor la marcó como corregida' },
           createdAt: { type: 'string', format: 'date-time' },
         },
       },
@@ -193,23 +198,35 @@ export default {
       post: {
         tags: ['Usuarios'], security: bearer,
         summary: 'Crear usuario',
-        description: 'Sin `password` se genera una temporal y se devuelve **una sola vez** en `tempPassword`. En ambos casos el usuario debe cambiarla al ingresar. Operarios y supervisores requieren `sede`.',
+        description: 'Sin `password` se genera una temporal y se devuelve **una sola vez** en `tempPassword`. En ambos casos el usuario debe cambiarla al ingresar. Supervisores y vendedores requieren `sede`. Un `vendedor` solo necesita `name` y `sede`: no tiene correo, contraseña ni módulos.',
         requestBody: {
           required: true,
           content: json({
-            type: 'object', required: ['name', 'email', 'role'],
+            type: 'object', required: ['name', 'role'],
             properties: {
-              name: { type: 'string' }, email: { type: 'string', format: 'email' }, role: ref('Role'),
-              sede: { type: 'string', description: 'Código de sede (operario/supervisor)' },
+              name: { type: 'string' }, email: { type: 'string', format: 'email', description: 'Requerido salvo para vendedor' }, role: ref('Role'),
+              sede: { type: 'string', description: 'Código de sede (supervisor/vendedor)' },
               permissions: { type: 'array', items: ref('Module') },
               password: { type: 'string', minLength: 8, description: 'Opcional' },
             },
-          }, { name: 'Carlos Rojas', email: 'carlos.rojas@empresa.com', role: 'operario', sede: 'SEDE-001', permissions: ['inicio', 'scanner', 'ordenes', 'observaciones', 'historial'] }),
+          }, { name: 'Carlos Rojas', email: 'carlos.rojas@empresa.com', role: 'supervisor', sede: 'SEDE-001', permissions: ['inicio', 'scanner', 'ordenes', 'observaciones', 'historial'] }),
         },
         responses: {
           201: { description: 'Usuario creado', content: json({ allOf: [ref('User'), { type: 'object', properties: { tempPassword: { type: 'string', description: 'Solo si no se envió password' } } }] }) },
           400: e400, 401: e401, 403: e403,
         },
+      },
+    },
+    '/api/users/vendedores': {
+      get: {
+        tags: ['Usuarios'], security: bearer,
+        summary: 'Vendedores para "Atendido por"',
+        description: 'Cualquier usuario con sesión. El supervisor solo recibe los de su sede; el admin puede filtrar con `sede`.',
+        parameters: [
+          { name: 'sede', in: 'query', schema: { type: 'string' }, description: 'Solo admin' },
+          { name: 'all', in: 'query', schema: { type: 'boolean' }, description: 'true incluye los desactivados' },
+        ],
+        responses: { 200: { description: 'Vendedores', content: json({ type: 'array', items: ref('Vendor') }) }, 401: e401 },
       },
     },
     '/api/users/{id}': {
@@ -271,7 +288,8 @@ export default {
           { name: 'sede', in: 'query', schema: { type: 'string' }, description: 'Solo admin; `all` para todas' },
           { name: 'status', in: 'query', schema: { type: 'string' } },
           { name: 'priority', in: 'query', schema: { type: 'string' } },
-          { name: 'q', in: 'query', schema: { type: 'string' }, description: 'Busca en código, cliente, lote, operador y línea' },
+          { name: 'attendedBy', in: 'query', schema: { type: 'string' }, description: 'Id del vendedor que atendió la orden' },
+          { name: 'q', in: 'query', schema: { type: 'string' }, description: 'Busca en código, cliente, lote, quien registró, vendedor y línea' },
         ],
         responses: { 200: { description: 'Órdenes', content: json({ type: 'array', items: ref('Order') }) }, 401: e401, 403: e403 },
       },
@@ -284,12 +302,13 @@ export default {
           content: {
             'multipart/form-data': {
               schema: {
-                type: 'object', required: ['code', 'product'],
+                type: 'object', required: ['code', 'product', 'attendedById'],
                 properties: {
                   code: { type: 'string', description: 'Código de la orden' },
                   product: { type: 'string', description: 'Cliente' },
                   sede: { type: 'string', description: 'Requerido solo para admin' },
                   operator: { type: 'string' },
+                  attendedById: { type: 'string', description: 'Vendedor activo de la sede de la orden (`GET /api/users/vendedores`)' },
                   confirmDuplicate: { type: 'boolean' },
                   photos: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Páginas escaneadas (hasta 10, 8 MB c/u)' },
                 },
@@ -309,7 +328,7 @@ export default {
       get: {
         tags: ['Órdenes'], security: bearer,
         summary: 'Órdenes pendientes de revisión',
-        description: 'Admin (todas) o supervisor (su sede). Devuelve el total y las 30 más recientes.',
+        description: 'Solo admin. Devuelve el total y las 30 más recientes.',
         responses: { 200: { description: 'Pendientes', content: json({ type: 'object', properties: { total: { type: 'integer' }, orders: { type: 'array', items: ref('Order') } } }) }, 401: e401, 403: e403 },
       },
       patch: {
@@ -322,14 +341,14 @@ export default {
       get: { tags: ['Órdenes'], security: bearer, summary: 'Detalle de una orden', responses: { 200: { description: 'Orden', content: json(ref('Order')) }, 401: e401, 403: e403, 404: e404 } },
       patch: {
         tags: ['Órdenes'], security: bearer, summary: 'Editar orden (solo admin)',
-        requestBody: { content: json({ type: 'object', properties: { product: { type: 'string' }, sede: { type: 'string' }, operator: { type: 'string' }, status: { type: 'string' }, priority: { type: 'string' }, line: { type: 'string' }, batch: { type: 'string' }, quantity: { type: 'number' }, completed: { type: 'number' } } }) },
+        requestBody: { content: json({ type: 'object', properties: { product: { type: 'string' }, sede: { type: 'string' }, operator: { type: 'string' }, attendedById: { type: 'string' }, status: { type: 'string' }, priority: { type: 'string' }, line: { type: 'string' }, batch: { type: 'string' }, quantity: { type: 'number' }, completed: { type: 'number' } } }) },
         responses: { 200: { description: 'Orden actualizada', content: json(ref('Order')) }, 401: e401, 403: e403, 404: e404 },
       },
       delete: { tags: ['Órdenes'], security: bearer, summary: 'Eliminar orden (solo admin)', responses: { 200: msg('Orden eliminada'), 401: e401, 403: e403, 404: e404 } },
     },
     '/api/orders/{code}/review': {
       parameters: [{ name: 'code', in: 'path', required: true, schema: { type: 'string' } }],
-      patch: { tags: ['Órdenes'], security: bearer, summary: 'Marcar una orden como revisada', description: 'Admin o supervisor (su sede).', responses: { 200: { description: 'Orden', content: json(ref('Order')) }, 401: e401, 403: e403, 404: e404 } },
+      patch: { tags: ['Órdenes'], security: bearer, summary: 'Marcar una orden como revisada', description: 'Solo admin.', responses: { 200: { description: 'Orden', content: json(ref('Order')) }, 401: e401, 403: e403, 404: e404 } },
     },
     '/api/orders/{code}/scan': {
       parameters: [{ name: 'code', in: 'path', required: true, schema: { type: 'string' } }],
@@ -342,13 +361,13 @@ export default {
       get: { tags: ['Observaciones'], security: bearer, summary: 'Observaciones de una orden', responses: { 200: { description: 'Observaciones', content: json({ type: 'array', items: ref('Feedback') }) }, 401: e401, 403: e403, 404: e404 } },
       post: {
         tags: ['Observaciones'], security: bearer,
-        summary: 'Enviar observación al operario',
-        description: 'Admin o supervisor (su sede). Marca la orden como revisada.',
+        summary: 'Enviar observación a quien registró la orden',
+        description: 'Solo admin. Marca la orden como revisada.',
         requestBody: {
           required: true,
           content: { 'multipart/form-data': { schema: { type: 'object', required: ['comment'], properties: { comment: { type: 'string' }, evidences: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Hasta 5 imágenes' } } } } },
         },
-        responses: { 201: { description: 'Observación enviada', content: json({ allOf: [ref('Feedback'), { type: 'object', properties: { delivered: { type: 'boolean', description: 'false si no se encontró al operario destinatario' } } }] }) }, 400: e400, 401: e401, 403: e403, 404: e404 },
+        responses: { 201: { description: 'Observación enviada', content: json({ allOf: [ref('Feedback'), { type: 'object', properties: { delivered: { type: 'boolean', description: 'false si no se encontró al supervisor destinatario' } } }] }) }, 400: e400, 401: e401, 403: e403, 404: e404 },
       },
     },
     '/api/feedback/mine': {
