@@ -1,5 +1,7 @@
 import { Schema, model } from 'mongoose'
 
+export const ROLES = ['admin', 'supervisor', 'vendedor']
+
 const userSchema = new Schema({
   // Identificador interno (se deriva del correo). Se mantiene por compatibilidad:
   // la app móvil y los usuarios antiguos todavía pueden ingresar con él.
@@ -7,8 +9,9 @@ const userSchema = new Schema({
   email:        { type: String, default: null, lowercase: true, trim: true },
   passwordHash: { type: String, required: true },
   name:         { type: String, required: true },
-  // supervisor: jefe de una sede — ve las órdenes de todo su equipo, las revisa y comenta
-  role:         { type: String, enum: ['admin', 'supervisor', 'operario'], required: true },
+  // supervisor: registra las órdenes de su sede y atiende las observaciones del admin.
+  // vendedor: solo existe para elegirlo en "Atendido por"; no ingresa al sistema.
+  role:         { type: String, enum: ROLES, required: true },
   sede:         { type: String, default: null },
   permissions:  { type: [String], default: [] },
   // 2 = Inicio y Observaciones ya son permisos explícitos (ver migrations.js)

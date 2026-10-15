@@ -17,7 +17,7 @@ router.get('/mine', requireAuth, requireModule('observaciones'), async (req, res
   ])
   const sedeName = Object.fromEntries(sedes.map(s => [s.code, s.name]))
 
-  // Datos de la orden revisada, para que el operario sepa exactamente de cuál se trata
+  // Datos de la orden revisada, para que el supervisor sepa exactamente de cuál se trata
   ok(res, {
     unseen,
     items: items.map(f => ({

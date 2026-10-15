@@ -3,12 +3,14 @@ import path from 'path'
 import express from 'express'
 import cors from 'cors'
 import { connectDB }  from './db.js'
-import { migratePermissions } from './migrations.js'
+import { migratePermissions, migrateOperariosToSupervisor } from './migrations.js'
 import authRoutes     from './routes/auth.js'
 import sedesRoutes    from './routes/sedes.js'
 import ordersRoutes   from './routes/orders.js'
 import usersRoutes    from './routes/users.js'
 import feedbackRoutes from './routes/feedback.js'
+import swaggerUi      from 'swagger-ui-express'
+import openapiSpec    from './docs/openapi.js'
 
 const app  = express()
 const PORT = process.env.PORT || 3000
@@ -42,6 +44,15 @@ app.use('/api/feedback', feedbackRoutes)
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }))
 
+// Documentación de la API (Swagger). Se puede apagar con API_DOCS=false.
+if (process.env.API_DOCS !== 'false') {
+  app.get('/api/docs.json', (_, res) => res.json(openapiSpec))
+  app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec, {
+    customSiteTitle: 'API · Órdenes de producción',
+    swaggerOptions: { persistAuthorization: true, docExpansion: 'list' },
+  }))
+}
+
 app.use((_, res) => res.status(404).json({ message: 'Ruta no encontrada' }))
 app.use((err, _req, res, _next) => {
   // Errores de subida de archivos (multer / filtro de imágenes) → 400 legible
@@ -60,9 +71,12 @@ app.use((err, _req, res, _next) => {
 
 connectDB()
   .then(migratePermissions)
+  .then(migrateOperariosToSupervisor)
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`\n🚀 Conexa API corriendo en http://localhost:${PORT}\n`)
+      console.log(`\n🚀 Conexa API corriendo en http://localhost:${PORT}`)
+      if (process.env.API_DOCS !== 'false') console.log(`📘 Documentación de la API: http://localhost:${PORT}/api/docs`)
+      console.log()
     })
   })
   .catch(err => {

@@ -69,7 +69,8 @@ router.post('/login', async (req, res) => {
   const user = await User.findOne(
     identifier.includes('@') ? { email: identifier } : { username: identifier }
   )
-  if (!user || !bcrypt.compareSync(password, user.passwordHash))
+  // Los vendedores no tienen acceso al sistema
+  if (!user || user.role === 'vendedor' || !bcrypt.compareSync(password, user.passwordHash))
     return unauth(res, 'Correo o contraseña incorrectos')
 
   if (user.active === false)

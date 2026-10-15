@@ -1,6 +1,6 @@
 import { Schema, model } from 'mongoose'
 
-// Retroalimentación del admin sobre una orden, dirigida al operario que la registró.
+// Retroalimentación del admin sobre una orden, dirigida al supervisor que la registró.
 const feedbackSchema = new Schema({
   order:         { type: Schema.Types.ObjectId, ref: 'Order', required: true },
   orderCode:     { type: String, required: true },
@@ -12,7 +12,7 @@ const feedbackSchema = new Schema({
   comment:       { type: String, required: true },
   evidences:     { type: [String], default: [] },
   seenAt:        { type: Date, default: null },
-  // El operario indica que ya atendió la observación
+  // El supervisor indica que ya atendió la observación
   resolvedAt:    { type: Date, default: null },
   createdAt:     { type: Date, default: Date.now },
 }, { versionKey: false })

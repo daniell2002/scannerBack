@@ -16,3 +16,12 @@ export async function migratePermissions() {
   await User.updateMany({ permissionsVersion: { $ne: 2 } }, { $set: { permissionsVersion: 2 } })
   if (modifiedCount) console.log(`  Permisos migrados: ${modifiedCount} operario(s) con Inicio y Observaciones`)
 }
+
+/**
+ * El rol "operario" se unificó con "supervisor": quien registraba órdenes ahora
+ * es supervisor de su sede. Conserva sus módulos y su sede. Es idempotente.
+ */
+export async function migrateOperariosToSupervisor() {
+  const { modifiedCount } = await User.updateMany({ role: 'operario' }, { $set: { role: 'supervisor' } })
+  if (modifiedCount) console.log(`  Roles migrados: ${modifiedCount} operario(s) ahora son supervisores`)
+}
