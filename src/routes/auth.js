@@ -82,6 +82,15 @@ router.post('/login', async (req, res) => {
   ok(res, signSession(user))
 })
 
+// POST /api/auth/refresh — renueva el token de una sesión vigente.
+// El frontend lo llama mientras el usuario está activo, así no lo saca a mitad
+// del trabajo; requireAuth ya rechaza tokens vencidos y cuentas desactivadas.
+router.post('/refresh', requireAuth, async (req, res) => {
+  const user = await User.findById(req.user.id)
+  if (!user) return unauth(res, 'Usuario no encontrado')
+  ok(res, signSession(user))
+})
+
 // POST /api/auth/change-password — cambio de contraseña del propio usuario.
 // Si tiene una contraseña temporal pendiente de cambio, no se pide la actual.
 router.post('/change-password', requireAuth, async (req, res) => {

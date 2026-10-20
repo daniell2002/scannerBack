@@ -58,8 +58,8 @@ router.get('/vendedores', requireAuth, async (req, res) => {
 })
 
 // POST /api/users — crea el usuario con su correo.
-// Sin contraseña → se genera una temporal y se devuelve UNA sola vez (tempPassword).
-// En ambos casos el usuario debe cambiarla en su primer ingreso.
+// Sin contraseña → se genera una temporal, se devuelve UNA sola vez (tempPassword)
+// y el usuario debe cambiarla en su primer ingreso. Si el admin la escribe, queda definitiva.
 // Un vendedor solo lleva nombre y sede: no tiene correo, contraseña ni módulos.
 router.post('/', requireAuth, requireModule('usuarios'), async (req, res) => {
   const { name, role, sede, permissions } = req.body
@@ -100,7 +100,7 @@ router.post('/', requireAuth, requireModule('usuarios'), async (req, res) => {
     role,
     sede:               role !== 'admin' ? (sede || null) : null,
     permissions:        isVendor ? [] : sanitizePermissions(permissions),
-    mustChangePassword: !isVendor,
+    mustChangePassword: !isVendor && !password,
   })
 
   created(res, { ...publicUser(user), tempPassword: password || isVendor ? undefined : tempPassword })
@@ -149,7 +149,7 @@ router.patch('/:id', requireAuth, requireModule('usuarios'), async (req, res) =>
     const pwdErr = passwordError(password.trim())
     if (pwdErr) return badRequest(res, pwdErr)
     updates.passwordHash = bcrypt.hashSync(password.trim(), 10)
-    updates.mustChangePassword = true
+    updates.mustChangePassword = false
   }
   if (Array.isArray(permissions) && !isVendor) updates.permissions = sanitizePermissions(permissions)
   if (typeof active === 'boolean') updates.active = active

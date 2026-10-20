@@ -160,6 +160,14 @@ export default {
         responses: { 200: { description: 'Sesión iniciada', content: json(ref('Session')) }, 400: e400, 401: msg('Credenciales incorrectas o cuenta desactivada') },
       },
     },
+    '/api/auth/refresh': {
+      post: {
+        tags: ['Autenticación'], security: bearer,
+        summary: 'Renovar la sesión',
+        description: 'Entrega un token nuevo si el actual sigue vigente. El frontend lo usa mientras el usuario está activo.',
+        responses: { 200: { description: 'Sesión renovada', content: json(ref('Session')) }, 401: e401 },
+      },
+    },
     '/api/auth/change-password': {
       post: {
         tags: ['Autenticación'], security: bearer,
@@ -198,7 +206,7 @@ export default {
       post: {
         tags: ['Usuarios'], security: bearer,
         summary: 'Crear usuario',
-        description: 'Sin `password` se genera una temporal y se devuelve **una sola vez** en `tempPassword`. En ambos casos el usuario debe cambiarla al ingresar. Supervisores y vendedores requieren `sede`. Un `vendedor` solo necesita `name` y `sede`: no tiene correo, contraseña ni módulos.',
+        description: 'Sin `password` se genera una temporal y se devuelve **una sola vez** en `tempPassword`. Solo la temporal obliga a cambiarla al ingresar; la escrita por el admin queda definitiva. Supervisores y vendedores requieren `sede`. Un `vendedor` solo necesita `name` y `sede`: no tiene correo, contraseña ni módulos.',
         requestBody: {
           required: true,
           content: json({

@@ -18,7 +18,7 @@ const userSchema = new Schema({
   permissionsVersion: { type: Number, default: 2 },
 
   active:             { type: Boolean, default: true },
-  // Contraseña temporal asignada por un admin: debe cambiarse en el siguiente ingreso
+  // Contraseña temporal generada por el sistema: debe cambiarse en el siguiente ingreso
   mustChangePassword: { type: Boolean, default: false },
   lastLoginAt:        { type: Date, default: null },
   createdAt:          { type: Date, default: Date.now },
