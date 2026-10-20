@@ -1,12 +1,15 @@
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
+import crypto from 'crypto'
 import User from '../models/User.js'
 import { ok, badRequest, unauth } from '../helpers/response.js'
 import { MODULES, requireAuth, requireAdmin } from '../middlewares/auth.js'
 import {
   normalizeEmail, isValidEmail, emailTaken, usernameFromEmail, passwordError,
 } from '../helpers/users.js'
+import { audit } from '../helpers/audit.js'
+import { mailEnabled, sendMail, resetPasswordMail } from '../helpers/mailer.js'
 
 const router = Router()
 
@@ -78,6 +81,7 @@ router.post('/login', async (req, res) => {
 
   user.lastLoginAt = new Date()
   await user.save()
+  audit(user, 'ingresar', 'sesion', { id: user._id, label: user.email || user.username })
 
   ok(res, signSession(user))
 })
@@ -114,8 +118,85 @@ router.post('/change-password', requireAuth, async (req, res) => {
   user.passwordHash       = bcrypt.hashSync(newPassword, 10)
   user.mustChangePassword = false
   await user.save()
+  audit(req.user, 'cambiar contraseña', 'usuario', { id: user._id, label: user.name })
 
   ok(res, { message: 'Contraseña actualizada', ...signSession(user) })
+})
+
+/* ── Recuperar contraseña por correo ─────────────────────────────── */
+
+const RESET_MINUTES = 60
+const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex')
+
+// Dirección pública de la web para armar el enlace del correo
+function appUrl(req) {
+  const fromEnv = process.env.APP_URL
+    || (process.env.FRONTEND_URL || '').split(',').map(o => o.trim()).find(o => o.startsWith('https://'))
+    || (process.env.FRONTEND_URL || '').split(',')[0]?.trim()
+  return (fromEnv || req.get('origin') || 'http://localhost:5173').replace(/\/$/, '')
+}
+
+// POST /api/auth/forgot-password — envía un enlace para crear una contraseña nueva.
+// Responde siempre lo mismo, exista o no el correo, para no revelar qué cuentas hay.
+router.post('/forgot-password', async (req, res) => {
+  const email = normalizeEmail(req.body.email)
+  const generic = { message: 'Si el correo está registrado, te enviamos un enlace para restablecer la contraseña.' }
+  if (!isValidEmail(email)) return badRequest(res, 'Ingresa un correo válido')
+
+  const user = await User.findOne({ email, active: { $ne: false }, role: { $ne: 'vendedor' } })
+  if (!user) return ok(res, generic)
+
+  // Evita llenar el buzón: un enlace por minuto como máximo
+  if (user.resetRequestedAt && Date.now() - user.resetRequestedAt.getTime() < 60_000)
+    return ok(res, generic)
+
+  const token = crypto.randomBytes(32).toString('hex')
+  user.resetTokenHash   = hashToken(token)
+  user.resetExpiresAt   = new Date(Date.now() + RESET_MINUTES * 60_000)
+  user.resetRequestedAt = new Date()
+  await user.save()
+
+  const link = `${appUrl(req)}/restablecer?token=${token}`
+  if (!mailEnabled()) {
+    // Sin SMTP: en desarrollo el enlace se muestra en la consola para poder probar
+    if (process.env.NODE_ENV !== 'production') console.log(`\n🔑 Enlace de recuperación para ${email}:\n${link}\n`)
+    else console.error('Recuperación de contraseña solicitada pero el correo (SMTP) no está configurado.')
+    return ok(res, generic)
+  }
+
+  try {
+    await sendMail({ to: email, ...resetPasswordMail({ name: user.name, link, minutes: RESET_MINUTES }) })
+  } catch (err) {
+    console.error('No se pudo enviar el correo de recuperación:', err.message)
+    return res.status(502).json({ message: 'No fue posible enviar el correo. Intenta más tarde o contacta a un administrador.' })
+  }
+  audit(user, 'recuperar', 'usuario', { id: user._id, label: user.name })
+  ok(res, generic)
+})
+
+// POST /api/auth/reset-password — crea la contraseña nueva con el enlace del correo
+router.post('/reset-password', async (req, res) => {
+  const { token, newPassword } = req.body
+  if (!token) return badRequest(res, 'El enlace no es válido')
+
+  const user = await User.findOne({
+    resetTokenHash: hashToken(String(token)),
+    resetExpiresAt: { $gt: new Date() },
+    active: { $ne: false },
+  })
+  if (!user) return badRequest(res, 'El enlace venció o ya fue usado. Solicita uno nuevo.')
+
+  const pwdErr = passwordError(newPassword?.trim())
+  if (pwdErr) return badRequest(res, pwdErr)
+
+  user.passwordHash       = bcrypt.hashSync(newPassword.trim(), 10)
+  user.mustChangePassword = false
+  user.resetTokenHash     = null
+  user.resetExpiresAt     = null
+  await user.save()
+  audit(user, 'restablecer', 'usuario', { id: user._id, label: `${user.name} (por correo)` })
+
+  ok(res, { message: 'Tu contraseña quedó actualizada. Ya puedes ingresar.' })
 })
 
 // PATCH /api/auth/profile — el usuario actualiza su propio correo y/o contraseña
@@ -144,6 +225,7 @@ router.patch('/profile', requireAuth, async (req, res) => {
   }
 
   await user.save()
+  if (newPassword?.trim()) audit(req.user, 'cambiar contraseña', 'usuario', { id: user._id, label: user.name })
 
   ok(res, { message: 'Perfil actualizado', user: sessionUser(user) })
 })

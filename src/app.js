@@ -9,6 +9,8 @@ import sedesRoutes    from './routes/sedes.js'
 import ordersRoutes   from './routes/orders.js'
 import usersRoutes    from './routes/users.js'
 import feedbackRoutes from './routes/feedback.js'
+import auditRoutes    from './routes/audit.js'
+import eventsRoutes   from './routes/events.js'
 import swaggerUi      from 'swagger-ui-express'
 import openapiSpec    from './docs/openapi.js'
 
@@ -41,6 +43,8 @@ app.use('/api/sedes',  sedesRoutes)
 app.use('/api/orders', ordersRoutes)
 app.use('/api/users',  usersRoutes)
 app.use('/api/feedback', feedbackRoutes)
+app.use('/api/audit',  auditRoutes)
+app.use('/api/events', eventsRoutes)
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }))
 

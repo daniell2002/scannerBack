@@ -7,8 +7,17 @@ import { startOfToday, startOfTomorrow } from '../helpers/date.js'
 import Order from '../models/Order.js'
 import Feedback from '../models/Feedback.js'
 import User from '../models/User.js'
+import { audit, diff } from '../helpers/audit.js'
+import { emit, toAdmins, toUser } from '../helpers/events.js'
 
 const router = Router()
+
+const EDITABLE = ['product', 'line', 'batch', 'status', 'priority', 'sede', 'quantity', 'completed', 'operator', 'attendedBy']
+
+// Aviso en tiempo real a los administradores cuando llega una orden por revisar
+const notifyAdmins = (order, rescan) => {
+  if (order.pendingReview) emit('order', { code: order.code, operator: order.operator, sede: order.sede, rescan }, toAdmins)
+}
 
 // El supervisor solo actúa sobre las órdenes de su sede; el admin sobre todas
 const sedeScope = (req) => req.user.role === 'admin' ? {} : { sede: req.user.sede }
@@ -127,13 +136,14 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
 
   // "Atendido por": un vendedor activo de la sede donde se registra la orden
   if (!attendedById) return reject('Selecciona el vendedor que atendió la orden')
-  const vendor = await findVendor(attendedById, sedeCode)
+  const [vendor, existing] = await Promise.all([
+    findVendor(attendedById, sedeCode),
+    Order.findOne({ code: normCode }),
+  ])
   if (!vendor) return reject('El vendedor seleccionado no existe, está inactivo o no pertenece a la sede')
   const opName   = operator?.trim() || req.user.name || 'Sin asignar'
   const photos   = files.map(f => `/uploads/orders/${f.filename}`)
   const photoUrl = photos[0]
-
-  const existing = await Order.findOne({ code: normCode })
 
   // Duplicado: no se sobreescribe en silencio, el cliente debe confirmar el reenvío.
   const confirmed = String(req.body.confirmDuplicate) === 'true'
@@ -166,6 +176,8 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
     existing.pendingReview = req.user.role !== 'admin'
     existing.updatedAt   = new Date()
     await existing.save()
+    audit(req.user, 'reenviar', 'orden', { id: existing.code, label: existing.code, sede: existing.sede })
+    notifyAdmins(existing, true)
     return ok(res, existing.toAPI())
   }
 
@@ -189,6 +201,8 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
     scanCount:   1,
     pendingReview: req.user.role !== 'admin',
   })
+  audit(req.user, 'crear', 'orden', { id: order.code, label: order.code, sede: order.sede })
+  notifyAdmins(order, false)
 
   created(res, order.toAPI())
 })
@@ -219,8 +233,10 @@ router.patch('/:code', requireAuth, requireAdmin, async (req, res) => {
 
   updates.updatedAt = new Date()
 
+  const before = order.toObject()
   Object.assign(order, updates)
   await order.save()
+  audit(req.user, 'editar', 'orden', { id: order.code, label: order.code, sede: order.sede, changes: diff(before, order, EDITABLE) })
 
   ok(res, order.toAPI())
 })
@@ -285,6 +301,8 @@ router.post('/:code/feedback', requireAuth, requireReviewer, uploadEvidence.arra
     comment,
     evidences:     (req.files || []).map(f => `/uploads/feedback/${f.filename}`),
   })
+  audit(req.user, 'crear', 'observacion', { id: order.code, label: `${order.code} → ${order.operator}`, sede: order.sede })
+  if (recipientId) emit('feedback', { orderCode: order.code, author: req.user.name }, toUser(recipientId))
 
   // Dejar retroalimentación implica que la orden ya fue revisada.
   if (order.pendingReview) {
@@ -299,6 +317,7 @@ router.post('/:code/feedback', requireAuth, requireReviewer, uploadEvidence.arra
 router.delete('/:code', requireAuth, requireAdmin, async (req, res) => {
   const order = await Order.findOneAndDelete({ code: req.params.code.toUpperCase() })
   if (!order) return notFound(res, 'Orden no encontrada')
+  audit(req.user, 'eliminar', 'orden', { id: order.code, label: `${order.code} · ${order.product}`, sede: order.sede })
   ok(res, { message: 'Orden eliminada' })
 })
 

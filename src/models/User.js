@@ -21,6 +21,10 @@ const userSchema = new Schema({
   // Contraseña temporal generada por el sistema: debe cambiarse en el siguiente ingreso
   mustChangePassword: { type: Boolean, default: false },
   lastLoginAt:        { type: Date, default: null },
+  // Recuperación por correo: se guarda solo el hash del enlace, nunca el enlace
+  resetTokenHash:     { type: String, default: null },
+  resetExpiresAt:     { type: Date, default: null },
+  resetRequestedAt:   { type: Date, default: null },
   createdAt:          { type: Date, default: Date.now },
 }, { versionKey: false })
 

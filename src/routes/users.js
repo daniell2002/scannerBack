@@ -2,12 +2,14 @@ import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import User, { ROLES } from '../models/User.js'
 import Order from '../models/Order.js'
+import Sede from '../models/Sede.js'
 import { MODULES, requireAuth, requireModule } from '../middlewares/auth.js'
 import { ok, created, notFound, badRequest, forbidden } from '../helpers/response.js'
 import {
   normalizeEmail, isValidEmail, emailTaken, usernameFromEmail, usernameFromName,
   generateTempPassword, passwordError, publicUser, publicVendor,
 } from '../helpers/users.js'
+import { audit, diff } from '../helpers/audit.js'
 
 const router = Router()
 
@@ -102,6 +104,7 @@ router.post('/', requireAuth, requireModule('usuarios'), async (req, res) => {
     permissions:        isVendor ? [] : sanitizePermissions(permissions),
     mustChangePassword: !isVendor && !password,
   })
+  audit(req.user, 'crear', 'usuario', { id: user._id, label: `${user.name} (${user.role})`, sede: user.sede })
 
   created(res, { ...publicUser(user), tempPassword: password || isVendor ? undefined : tempPassword })
 })
@@ -160,10 +163,19 @@ router.patch('/:id', requireAuth, requireModule('usuarios'), async (req, res) =>
     { new: true, runValidators: true }
   )
   if (!user) return notFound(res, 'Usuario no encontrado')
+  const changes = diff(target, user, ['name', 'email', 'role', 'sede', 'permissions', 'active'])
+  if (updates.passwordHash) changes.password = { from: '•••', to: 'nueva' }
+  audit(req.user, 'editar', 'usuario', { id: user._id, label: user.name, sede: user.sede, changes })
 
   // Las órdenes guardan el nombre del vendedor: se mantiene al día si cambia
   if (isVendor && updates.name && updates.name !== target.name)
     await Order.updateMany({ attendedById: user._id }, { $set: { attendedBy: user.name } })
+
+  // Coordinador de sede: si deja de ser supervisor se quita; si cambia el nombre, se actualiza
+  if (target.role === 'supervisor' && user.role !== 'supervisor')
+    await Sede.updateMany({ managerId: user._id }, { $set: { managerId: null, manager: '' } })
+  else if (updates.name && updates.name !== target.name)
+    await Sede.updateMany({ managerId: user._id }, { $set: { manager: user.name } })
 
   ok(res, publicUser(user))
 })
@@ -183,6 +195,7 @@ router.post('/:id/reset-password', requireAuth, requireModule('usuarios'), async
     { new: true }
   )
   if (!user) return notFound(res, 'Usuario no encontrado')
+  audit(req.user, 'restablecer', 'usuario', { id: user._id, label: user.name, sede: user.sede })
 
   ok(res, { ...publicUser(user), tempPassword })
 })
@@ -196,6 +209,8 @@ router.delete('/:id', requireAuth, requireModule('usuarios'), async (req, res) =
   if (delegErr) return forbidden(res, delegErr)
 
   await target.deleteOne()
+  await Sede.updateMany({ managerId: target._id }, { $set: { managerId: null, manager: '' } })
+  audit(req.user, 'eliminar', 'usuario', { id: target._id, label: `${target.name} (${target.role})`, sede: target.sede })
   ok(res, { message: 'Usuario eliminado' })
 })
 

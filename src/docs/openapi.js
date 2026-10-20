@@ -46,6 +46,8 @@ export default {
     { name: 'Sedes', description: 'Lectura para todos; crear/editar/eliminar requiere el módulo `sedes`.' },
     { name: 'Órdenes', description: 'Registro, consulta y revisión de órdenes de producción.' },
     { name: 'Observaciones', description: 'Retroalimentación del admin al supervisor que registró la orden.' },
+    { name: 'Actividad', description: 'Registro de quién creó, editó o eliminó cada elemento (solo admin).' },
+    { name: 'Tiempo real', description: 'Avisos instantáneos (Server-Sent Events).' },
   ],
   components: {
     securitySchemes: {
@@ -88,7 +90,8 @@ export default {
           code: { type: 'string', example: 'SEDE-001', description: 'Se genera solo' },
           name: { type: 'string', example: 'Central mezclas' },
           city: { type: 'string', example: 'Bogotá' },
-          manager: { type: 'string', example: 'Juan Pérez' },
+          manager: { type: 'string', example: 'Juan Pérez', description: 'Nombre del coordinador' },
+          managerId: { type: 'string', nullable: true, description: 'Supervisor coordinador (null = sin coordinador o texto libre antiguo)' },
         },
       },
       Order: {
@@ -166,6 +169,48 @@ export default {
         summary: 'Renovar la sesión',
         description: 'Entrega un token nuevo si el actual sigue vigente. El frontend lo usa mientras el usuario está activo.',
         responses: { 200: { description: 'Sesión renovada', content: json(ref('Session')) }, 401: e401 },
+      },
+    },
+    '/api/auth/forgot-password': {
+      post: {
+        tags: ['Autenticación'],
+        summary: 'Olvidé mi contraseña',
+        description: 'Envía al correo un enlace (vence en 60 min) para crear una contraseña nueva. Responde lo mismo exista o no la cuenta. Requiere SMTP configurado; sin él, en desarrollo el enlace se muestra en la consola del servidor.',
+        requestBody: { required: true, content: json({ type: 'object', required: ['email'], properties: { email: { type: 'string', format: 'email' } } }, { email: 'admin@empresa.com' }) },
+        responses: { 200: msg('Solicitud recibida'), 400: e400, 502: msg('No se pudo enviar el correo') },
+      },
+    },
+    '/api/auth/reset-password': {
+      post: {
+        tags: ['Autenticación'],
+        summary: 'Crear contraseña nueva con el enlace del correo',
+        requestBody: { required: true, content: json({ type: 'object', required: ['token', 'newPassword'], properties: { token: { type: 'string' }, newPassword: { type: 'string', minLength: 8 } } }) },
+        responses: { 200: msg('Contraseña actualizada'), 400: msg('Enlace vencido o contraseña no válida') },
+      },
+    },
+    '/api/audit': {
+      get: {
+        tags: ['Actividad'], security: bearer,
+        summary: 'Historial de actividad',
+        parameters: ['entity', 'action', 'actorId', 'sede', 'q', 'from', 'to', 'page', 'limit'].map(name => ({ name, in: 'query', schema: { type: 'string' } })),
+        responses: { 200: { description: 'Página de registros', content: json({ type: 'object' }) }, 401: e401, 403: e403 },
+      },
+    },
+    '/api/events/ticket': {
+      post: {
+        tags: ['Tiempo real'], security: bearer,
+        summary: 'Ticket para abrir la conexión de eventos',
+        description: 'EventSource no envía el header Authorization: se pide este ticket (un solo uso, 30 s) y se conecta a `/api/events?ticket=…`.',
+        responses: { 200: { description: 'Ticket', content: json({ type: 'object', properties: { ticket: { type: 'string' } } }) }, 401: e401 },
+      },
+    },
+    '/api/events': {
+      get: {
+        tags: ['Tiempo real'],
+        summary: 'Conexión de eventos (SSE)',
+        description: 'Eventos: `order` (orden nueva por revisar, a los admin) y `feedback` (observación nueva, a quien la recibe).',
+        parameters: [{ name: 'ticket', in: 'query', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'text/event-stream' }, 401: e401 },
       },
     },
     '/api/auth/change-password': {
@@ -267,11 +312,15 @@ export default {
     },
 
     /* ── Sedes ── */
+    '/api/sedes/coordinators': {
+      get: { tags: ['Sedes'], security: bearer, summary: 'Supervisores que pueden ser coordinadores', responses: { 200: { description: 'Supervisores activos', content: json({ type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, email: { type: 'string' }, sede: { type: 'string' } } } }) }, 401: e401, 403: e403 } },
+    },
     '/api/sedes': {
       get: { tags: ['Sedes'], security: bearer, summary: 'Listar sedes', responses: { 200: { description: 'Sedes', content: json({ type: 'array', items: ref('Sede') }) }, 401: e401 } },
       post: {
         tags: ['Sedes'], security: bearer, summary: 'Crear sede',
-        requestBody: { required: true, content: json({ type: 'object', required: ['name', 'city', 'manager'], properties: { name: { type: 'string' }, city: { type: 'string' }, manager: { type: 'string' } } }, { name: 'Central mezclas', city: 'Bogotá', manager: 'Juan Pérez' }) },
+        description: 'El coordinador es opcional y debe ser un supervisor activo (`managerId`). Con `assignManagerToSede: true` el supervisor pasa a pertenecer a esta sede. `manager` (texto) se acepta por compatibilidad con la app móvil.',
+        requestBody: { required: true, content: json({ type: 'object', required: ['name', 'city'], properties: { name: { type: 'string' }, city: { type: 'string' }, managerId: { type: 'string', nullable: true }, assignManagerToSede: { type: 'boolean' }, manager: { type: 'string', deprecated: true } } }, { name: 'Central mezclas', city: 'Bogotá', managerId: '665f1c2e9b1e8a0012345678', assignManagerToSede: true }) },
         responses: { 201: { description: 'Sede creada', content: json(ref('Sede')) }, 400: e400, 401: e401, 403: e403 },
       },
     },
