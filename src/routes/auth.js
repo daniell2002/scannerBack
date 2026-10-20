@@ -6,7 +6,7 @@ import User from '../models/User.js'
 import { ok, badRequest, unauth } from '../helpers/response.js'
 import { MODULES, requireAuth, requireAdmin } from '../middlewares/auth.js'
 import {
-  normalizeEmail, isValidEmail, emailTaken, usernameFromEmail, passwordError,
+  normalizeEmail, isValidEmail, emailConflict, usernameFromEmail, passwordError, normalizeUsername,
 } from '../helpers/users.js'
 import { audit } from '../helpers/audit.js'
 import { mailEnabled, sendMail, resetPasswordMail } from '../helpers/mailer.js'
@@ -62,19 +62,26 @@ router.get('/modules', requireAuth, requireAdmin, (_req, res) => {
   ok(res, MODULES)
 })
 
-// POST /api/auth/login — acepta correo o usuario (campo "username" o "email")
+// POST /api/auth/login — con el nombre de usuario o con el correo (campo "username" o "email").
+// Un correo compartido por varios supervisores no identifica a nadie: se pide el usuario.
 router.post('/login', async (req, res) => {
   const identifier = (req.body.email || req.body.username || '').trim().toLowerCase()
   const { password } = req.body
   if (!identifier || !password)
-    return badRequest(res, 'Correo y contraseña requeridos')
+    return badRequest(res, 'Usuario y contraseña requeridos')
 
-  const user = await User.findOne(
-    identifier.includes('@') ? { email: identifier } : { username: identifier }
-  )
+  let user
+  if (identifier.includes('@')) {
+    const matches = await User.find({ email: identifier, role: { $ne: 'vendedor' } }).limit(2)
+    if (matches.length > 1)
+      return unauth(res, 'Ese correo lo comparten varias cuentas. Ingresa con tu nombre de usuario.')
+    user = matches[0]
+  } else {
+    user = await User.findOne({ username: identifier })
+  }
   // Los vendedores no tienen acceso al sistema
   if (!user || user.role === 'vendedor' || !bcrypt.compareSync(password, user.passwordHash))
-    return unauth(res, 'Correo o contraseña incorrectos')
+    return unauth(res, 'Usuario o contraseña incorrectos')
 
   if (user.active === false)
     return unauth(res, 'Tu cuenta está desactivada. Contacta a un administrador.')
@@ -137,40 +144,49 @@ function appUrl(req) {
 }
 
 // POST /api/auth/forgot-password — envía un enlace para crear una contraseña nueva.
-// Responde siempre lo mismo, exista o no el correo, para no revelar qué cuentas hay.
+// Acepta el nombre de usuario o el correo ("identifier", o "email" en clientes antiguos).
+// Si el correo lo comparten varias cuentas, llega un solo correo con un enlace por cuenta.
+// Responde siempre lo mismo, exista o no la cuenta, para no revelar cuáles hay.
 router.post('/forgot-password', async (req, res) => {
-  const email = normalizeEmail(req.body.email)
-  const generic = { message: 'Si el correo está registrado, te enviamos un enlace para restablecer la contraseña.' }
-  if (!isValidEmail(email)) return badRequest(res, 'Ingresa un correo válido')
+  const identifier = normalizeUsername(req.body.identifier || req.body.email)
+  const generic = { message: 'Si la cuenta existe y tiene un correo registrado, te enviamos un enlace para restablecer la contraseña. Si no tiene correo, pide a un administrador que la restablezca.' }
+  if (!identifier) return badRequest(res, 'Ingresa tu usuario o tu correo')
+  if (identifier.includes('@') && !isValidEmail(identifier)) return badRequest(res, 'Ingresa un correo válido')
 
-  const user = await User.findOne({ email, active: { $ne: false }, role: { $ne: 'vendedor' } })
-  if (!user) return ok(res, generic)
+  const base = { active: { $ne: false }, role: { $ne: 'vendedor' } }
+  const users = identifier.includes('@')
+    ? await User.find({ ...base, email: identifier }).sort('name')
+    : await User.find({ ...base, username: identifier, email: { $ne: null } })
+  // Evita llenar el buzón: un enlace por cuenta y por minuto como máximo
+  const due = users.filter(u => !u.resetRequestedAt || Date.now() - u.resetRequestedAt.getTime() >= 60_000)
+  if (!due.length) return ok(res, generic)
 
-  // Evita llenar el buzón: un enlace por minuto como máximo
-  if (user.resetRequestedAt && Date.now() - user.resetRequestedAt.getTime() < 60_000)
-    return ok(res, generic)
+  const accounts = []
+  for (const user of due) {
+    const token = crypto.randomBytes(32).toString('hex')
+    user.resetTokenHash   = hashToken(token)
+    user.resetExpiresAt   = new Date(Date.now() + RESET_MINUTES * 60_000)
+    user.resetRequestedAt = new Date()
+    await user.save()
+    accounts.push({ user, name: user.name, username: user.username, link: `${appUrl(req)}/restablecer?token=${token}` })
+  }
+  const to = due[0].email
 
-  const token = crypto.randomBytes(32).toString('hex')
-  user.resetTokenHash   = hashToken(token)
-  user.resetExpiresAt   = new Date(Date.now() + RESET_MINUTES * 60_000)
-  user.resetRequestedAt = new Date()
-  await user.save()
-
-  const link = `${appUrl(req)}/restablecer?token=${token}`
   if (!mailEnabled()) {
-    // Sin SMTP: en desarrollo el enlace se muestra en la consola para poder probar
-    if (process.env.NODE_ENV !== 'production') console.log(`\n🔑 Enlace de recuperación para ${email}:\n${link}\n`)
+    // Sin SMTP: en desarrollo los enlaces se muestran en la consola para poder probar
+    if (process.env.NODE_ENV !== 'production')
+      console.log(`\n🔑 Recuperación de contraseña (${to}):\n${accounts.map(a => `   ${a.username}: ${a.link}`).join('\n')}\n`)
     else console.error('Recuperación de contraseña solicitada pero el correo (SMTP) no está configurado.')
     return ok(res, generic)
   }
 
   try {
-    await sendMail({ to: email, ...resetPasswordMail({ name: user.name, link, minutes: RESET_MINUTES }) })
+    await sendMail({ to, ...resetPasswordMail({ accounts, minutes: RESET_MINUTES }) })
   } catch (err) {
     console.error('No se pudo enviar el correo de recuperación:', err.message)
     return res.status(502).json({ message: 'No fue posible enviar el correo. Intenta más tarde o contacta a un administrador.' })
   }
-  audit(user, 'recuperar', 'usuario', { id: user._id, label: user.name })
+  accounts.forEach(a => audit(a.user, 'recuperar', 'usuario', { id: a.user._id, label: a.user.name }))
   ok(res, generic)
 })
 
@@ -208,9 +224,12 @@ router.patch('/profile', requireAuth, async (req, res) => {
 
   if (req.body.email !== undefined) {
     const email = normalizeEmail(req.body.email)
-    if (!isValidEmail(email)) return badRequest(res, 'Ingresa un correo válido')
-    if (await emailTaken(email, user._id)) return badRequest(res, 'Ese correo ya está en uso')
-    user.email = email
+    if (!email && user.role === 'admin')
+      return badRequest(res, 'El administrador necesita un correo para poder recuperar su contraseña')
+    if (email && !isValidEmail(email)) return badRequest(res, 'Ingresa un correo válido')
+    const conflict = await emailConflict(email, user.role, user._id)
+    if (conflict) return badRequest(res, conflict)
+    user.email = email || null
   }
 
   if (newPassword?.trim()) {

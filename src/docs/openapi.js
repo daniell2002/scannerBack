@@ -152,7 +152,7 @@ export default {
       post: {
         tags: ['Autenticación'],
         summary: 'Iniciar sesión',
-        description: 'Acepta correo o usuario (cuentas antiguas) en el campo `username` (o `email`).',
+        description: 'Con el nombre de usuario o el correo en `username` (o `email`). Si el correo lo comparten varias cuentas, responde 401 pidiendo el usuario.',
         requestBody: {
           required: true,
           content: json({
@@ -176,7 +176,7 @@ export default {
         tags: ['Autenticación'],
         summary: 'Olvidé mi contraseña',
         description: 'Envía al correo un enlace (vence en 60 min) para crear una contraseña nueva. Responde lo mismo exista o no la cuenta. Requiere SMTP configurado; sin él, en desarrollo el enlace se muestra en la consola del servidor.',
-        requestBody: { required: true, content: json({ type: 'object', required: ['email'], properties: { email: { type: 'string', format: 'email' } } }, { email: 'admin@empresa.com' }) },
+        requestBody: { required: true, content: json({ type: 'object', required: ['email'], properties: { identifier: { type: 'string', description: 'Usuario o correo' } } }, { identifier: 'laura.norte' }) },
         responses: { 200: msg('Solicitud recibida'), 400: e400, 502: msg('No se pudo enviar el correo') },
       },
     },
@@ -251,7 +251,7 @@ export default {
       post: {
         tags: ['Usuarios'], security: bearer,
         summary: 'Crear usuario',
-        description: 'Sin `password` se genera una temporal y se devuelve **una sola vez** en `tempPassword`. Solo la temporal obliga a cambiarla al ingresar; la escrita por el admin queda definitiva. Supervisores y vendedores requieren `sede`. Un `vendedor` solo necesita `name` y `sede`: no tiene correo, contraseña ni módulos.',
+        description: 'Se ingresa con `username` (único: 3–30 caracteres, letras, números, `.`, `-`, `_`). El correo es opcional para supervisores y puede ser el mismo para varios; el admin necesita uno propio. Sin `password` se genera una temporal y se devuelve **una sola vez** en `tempPassword`. Solo la temporal obliga a cambiarla al ingresar; la escrita por el admin queda definitiva. Supervisores y vendedores requieren `sede`. Un `vendedor` solo necesita `name` y `sede`: no tiene correo, contraseña ni módulos.',
         requestBody: {
           required: true,
           content: json({

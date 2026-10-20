@@ -1,3 +1,4 @@
+import mongoose from 'mongoose'
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import User, { ROLES } from '../models/User.js'
@@ -6,7 +7,8 @@ import Sede from '../models/Sede.js'
 import { MODULES, requireAuth, requireModule } from '../middlewares/auth.js'
 import { ok, created, notFound, badRequest, forbidden } from '../helpers/response.js'
 import {
-  normalizeEmail, isValidEmail, emailTaken, usernameFromEmail, usernameFromName,
+  normalizeEmail, isValidEmail, emailConflict, usernameFromName,
+  normalizeUsername, usernameError, usernameTaken, usernameSuggestion,
   generateTempPassword, passwordError, publicUser, publicVendor,
 } from '../helpers/users.js'
 import { audit, diff } from '../helpers/audit.js'
@@ -59,7 +61,21 @@ router.get('/vendedores', requireAuth, async (req, res) => {
   ok(res, vendors.map(publicVendor))
 })
 
-// POST /api/users — crea el usuario con su correo.
+// GET /api/users/username-check?u=…&except=… — ¿está libre este usuario? (+ sugerencia por nombre)
+router.get('/username-check', requireAuth, requireModule('usuarios'), async (req, res) => {
+  const username = normalizeUsername(req.query.u)
+  const suggestion = req.query.name ? await usernameSuggestion(req.query.name) : undefined
+  if (!username) return ok(res, { available: false, suggestion })
+  const error = usernameError(username)
+  if (error) return ok(res, { available: false, error, suggestion })
+  const except = mongoose.isValidObjectId(req.query.except) ? req.query.except : null
+  const taken = await usernameTaken(username, except)
+  ok(res, { available: !taken, error: taken ? 'Ese usuario ya existe' : null, suggestion })
+})
+
+// POST /api/users — crea el usuario. Ingresa con su nombre de usuario (o con su
+// correo, si nadie más lo usa). El correo es opcional para supervisores y puede
+// ser el mismo para varios; el administrador sí necesita uno propio.
 // Sin contraseña → se genera una temporal, se devuelve UNA sola vez (tempPassword)
 // y el usuario debe cambiarla en su primer ingreso. Si el admin la escribe, queda definitiva.
 // Un vendedor solo lleva nombre y sede: no tiene correo, contraseña ni módulos.
@@ -71,10 +87,12 @@ router.post('/', requireAuth, requireModule('usuarios'), async (req, res) => {
 
   if (!name?.trim() || !role) return badRequest(res, 'Nombre y rol son requeridos')
   if (!ROLES.includes(role))  return badRequest(res, 'Rol no válido')
-  // Compatibilidad: clientes antiguos (app móvil) crean usuarios solo con "username"
-  if (!isVendor && !email && !req.body.username?.trim()) return badRequest(res, 'El correo es requerido')
   if (email && !isValidEmail(email)) return badRequest(res, 'Ingresa un correo válido')
-  if (email && await emailTaken(email)) return badRequest(res, 'Ya existe un usuario con ese correo')
+  if (role === 'admin' && !email) return badRequest(res, 'El administrador necesita un correo para poder recuperar su contraseña')
+  if (!isVendor) {
+    const conflict = await emailConflict(email, role)
+    if (conflict) return badRequest(res, conflict)
+  }
   if (role !== 'admin' && !sede) return badRequest(res, 'El supervisor o vendedor debe tener una sede asignada')
 
   const delegErr = delegationError(req, { role, sede })
@@ -85,10 +103,15 @@ router.post('/', requireAuth, requireModule('usuarios'), async (req, res) => {
     if (pwdErr) return badRequest(res, pwdErr)
   }
 
+  // Sin usuario explícito (clientes antiguos) se sugiere uno a partir del nombre
   const username = isVendor
     ? await usernameFromName(name)
-    : req.body.username?.trim().toLowerCase() || await usernameFromEmail(email)
-  if (await User.exists({ username })) return badRequest(res, 'El nombre de usuario ya existe')
+    : normalizeUsername(req.body.username) || await usernameSuggestion(name)
+  if (!isVendor) {
+    const uErr = usernameError(username)
+    if (uErr) return badRequest(res, uErr)
+  }
+  if (await usernameTaken(username)) return badRequest(res, 'Ese nombre de usuario ya existe')
 
   // El vendedor recibe una contraseña aleatoria que nadie conoce; además el
   // login rechaza su rol, así que nunca puede ingresar.
@@ -139,13 +162,30 @@ router.patch('/:id', requireAuth, requireModule('usuarios'), async (req, res) =>
   } else if (sede !== undefined) {
     updates.sede = sede || null
   }
-  if (isVendor && req.body.email !== undefined && !req.body.email?.trim()) {
-    updates.email = null // el correo del vendedor es opcional
-  } else if (req.body.email !== undefined) {
+  const finalRole = role || target.role
+  if (req.body.email !== undefined) {
     const email = normalizeEmail(req.body.email)
-    if (!isValidEmail(email)) return badRequest(res, 'Ingresa un correo válido')
-    if (await emailTaken(email, req.params.id)) return badRequest(res, 'Ya existe un usuario con ese correo')
-    updates.email = email
+    if (!email) {
+      // Opcional para vendedores y supervisores; el administrador siempre lo necesita
+      if (finalRole === 'admin') return badRequest(res, 'El administrador necesita un correo para poder recuperar su contraseña')
+      updates.email = null
+    } else {
+      if (!isValidEmail(email)) return badRequest(res, 'Ingresa un correo válido')
+      updates.email = email
+    }
+  } else if (finalRole === 'admin' && !target.email) {
+    return badRequest(res, 'Agrega un correo: el administrador lo necesita para recuperar su contraseña')
+  }
+  if (!isVendor) {
+    const conflict = await emailConflict(updates.email !== undefined ? updates.email : target.email, finalRole, req.params.id)
+    if (conflict) return badRequest(res, conflict)
+  }
+  if (req.body.username !== undefined && !isVendor) {
+    const username = normalizeUsername(req.body.username)
+    const uErr = usernameError(username)
+    if (uErr) return badRequest(res, uErr)
+    if (await usernameTaken(username, req.params.id)) return badRequest(res, 'Ese nombre de usuario ya existe')
+    updates.username = username
   }
   // Compatibilidad con la app móvil, que aún envía la contraseña al editar
   if (password?.trim() && !isVendor) {
@@ -163,7 +203,7 @@ router.patch('/:id', requireAuth, requireModule('usuarios'), async (req, res) =>
     { new: true, runValidators: true }
   )
   if (!user) return notFound(res, 'Usuario no encontrado')
-  const changes = diff(target, user, ['name', 'email', 'role', 'sede', 'permissions', 'active'])
+  const changes = diff(target, user, ['name', 'username', 'email', 'role', 'sede', 'permissions', 'active'])
   if (updates.passwordHash) changes.password = { from: '•••', to: 'nueva' }
   audit(req.user, 'editar', 'usuario', { id: user._id, label: user.name, sede: user.sede, changes })
 
