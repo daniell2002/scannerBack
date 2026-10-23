@@ -8,6 +8,8 @@ import User from '../models/User.js'
 export const MODULES = [
   'inicio', 'scanner', 'ordenes', 'observaciones', 'historial', 'estadisticas',
   'sedes', 'usuarios',
+  // Permisos sin página propia: corregir y eliminar órdenes ya registradas
+  'editar_ordenes', 'eliminar_ordenes',
 ]
 
 // Módulos que los operarios tenían incluidos antes de que fueran asignables

@@ -15,8 +15,23 @@ const router = Router()
 const EDITABLE = ['product', 'line', 'batch', 'status', 'priority', 'sede', 'quantity', 'completed', 'operator', 'attendedBy']
 
 // Aviso en tiempo real a los administradores cuando llega una orden por revisar
-const notifyAdmins = (order, rescan) => {
-  if (order.pendingReview) emit('order', { code: order.code, operator: order.operator, sede: order.sede, rescan }, toAdmins)
+const notifyAdmins = (order, rescan, { edited = false, by = '' } = {}) => {
+  if (order.pendingReview) emit('order', { code: order.code, operator: by || order.operator, sede: order.sede, rescan, edited }, toAdmins)
+}
+
+/** 409 de código repetido con los datos de la orden existente. */
+function duplicateResponse(res, existing, user) {
+  const sameUser = existing.operatorId
+    ? String(existing.operatorId) === String(user.id)
+    : existing.operator === user.name
+  return res.status(409).json({
+    code:     'DUPLICATE',
+    message:  sameUser
+      ? `Ya registraste la orden ${existing.code} anteriormente. No se puede registrar de nuevo.`
+      : `La orden ${existing.code} ya fue registrada por ${existing.operator}. No se puede registrar de nuevo.`,
+    sameUser,
+    order:    existing.toAPI(),
+  })
 }
 
 // El supervisor solo actúa sobre las órdenes de su sede; el admin sobre todas
@@ -124,6 +139,7 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
 
   if (!code?.trim())    return reject('El código es requerido')
   if (!product?.trim()) return reject('El cliente es requerido')
+  if (!files.length)    return reject('Adjunta al menos una foto de la orden')
 
   if (req.user.role !== 'admin' && !req.user.sede)
     return reject('Tu usuario no tiene sede asignada. Contacta a un administrador.')
@@ -145,66 +161,138 @@ router.post('/', requireAuth, requireModule('scanner'), orderPhotos, async (req,
   const photos   = files.map(f => `/uploads/orders/${f.filename}`)
   const photoUrl = photos[0]
 
-  // Duplicado: no se sobreescribe en silencio, el cliente debe confirmar el reenvío.
-  const confirmed = String(req.body.confirmDuplicate) === 'true'
-  if (existing && !confirmed) {
-    files.forEach(discardUpload)
-    const sameUser = existing.operatorId
-      ? String(existing.operatorId) === String(req.user.id)
-      : existing.operator === req.user.name
-    return res.status(409).json({
-      code:     'DUPLICATE',
-      message:  sameUser
-        ? `Ya registraste la orden ${normCode} anteriormente.`
-        : `La orden ${normCode} ya fue registrada por ${existing.operator}.`,
-      sameUser,
-      order:    existing.toAPI(),
-    })
-  }
-
+  // Un código ya registrado no se vuelve a registrar: se responde quién y cuándo
+  // lo registró. (Para corregirla, el admin la edita o la elimina.)
   if (existing) {
-    if (req.user.role !== 'admin') existing.sede = req.user.sede
-    existing.operator = opName
-    existing.operatorId = req.user.id
-    existing.attendedBy   = vendor.name
-    existing.attendedById = vendor._id
-    // Nuevo registro: las fotos nuevas reemplazan a las anteriores
-    if (photos.length) { existing.photos = photos; existing.photoUrl = photoUrl }
-    existing.scheduledAt = new Date()
-    existing.scannedAt   = new Date()
-    existing.scanCount  += 1
-    existing.pendingReview = req.user.role !== 'admin'
-    existing.updatedAt   = new Date()
-    await existing.save()
-    audit(req.user, 'reenviar', 'orden', { id: existing.code, label: existing.code, sede: existing.sede })
-    notifyAdmins(existing, true)
-    return ok(res, existing.toAPI())
+    files.forEach(discardUpload)
+    return duplicateResponse(res, existing, req.user)
   }
 
-  const order = await Order.create({
-    code:        normCode,
-    product:     product.trim(),
-    line:        line?.trim() || '',
-    batch:       batch?.trim() || `BT-${Date.now().toString().slice(-6)}`,
-    sede:        sedeCode,
-    operator:    opName,
-    operatorId:  req.user.id,
-    attendedBy:   vendor.name,
-    attendedById: vendor._id,
-    quantity:    Number(quantity) || 0,
-    priority:    priority || 'Media',
-    photoUrl:    photoUrl || null,
-    photos,
-    scheduledAt: new Date(),
-    updatedAt:   new Date(),
-    scannedAt:   new Date(),
-    scanCount:   1,
-    pendingReview: req.user.role !== 'admin',
-  })
+  let order
+  try {
+    order = await Order.create({
+      code:        normCode,
+      product:     product.trim(),
+      line:        line?.trim() || '',
+      batch:       batch?.trim() || `BT-${Date.now().toString().slice(-6)}`,
+      sede:        sedeCode,
+      operator:    opName,
+      operatorId:  req.user.id,
+      attendedBy:   vendor.name,
+      attendedById: vendor._id,
+      quantity:    Number(quantity) || 0,
+      priority:    priority || 'Media',
+      photoUrl:    photoUrl || null,
+      photos,
+      scheduledAt: new Date(),
+      updatedAt:   new Date(),
+      scannedAt:   new Date(),
+      scanCount:   1,
+      pendingReview: req.user.role !== 'admin',
+    })
+  } catch (err) {
+    // Dos registros del mismo código al mismo tiempo: el índice único frena al segundo
+    if (err?.code !== 11000) throw err
+    files.forEach(discardUpload)
+    const winner = await Order.findOne({ code: normCode })
+    if (!winner) throw err
+    return duplicateResponse(res, winner, req.user)
+  }
   audit(req.user, 'crear', 'orden', { id: order.code, label: order.code, sede: order.sede })
   notifyAdmins(order, false)
 
   created(res, order.toAPI())
+})
+
+// PATCH /api/orders/:code/correct — corregir una orden ya registrada.
+// Permiso "editar_ordenes" (el supervisor, solo en su sede; el admin, en todas).
+// multipart: code, product, attendedById, reason (obligatorio),
+//            keepPhotos (JSON: fotos actuales que se conservan, en orden) y photos (nuevas).
+// Queda en el historial de la orden (edits) y en el de actividad. Si corrige un
+// supervisor, la orden vuelve a quedar pendiente de revisión y se avisa al admin.
+router.patch('/:code/correct', requireAuth, requireModule('editar_ordenes'), orderPhotos, async (req, res) => {
+  const files  = [...(req.files?.photos || []), ...(req.files?.photo || [])]
+  const reject = (msg, fn = badRequest) => { files.forEach(discardUpload); return fn(res, msg) }
+
+  const order = await Order.findOne({ code: req.params.code.toUpperCase(), ...sedeScope(req) })
+  if (!order) return reject('Orden no encontrada', notFound)
+
+  const reason = req.body.reason?.trim()
+  if (!reason) return reject('Indica el motivo de la corrección')
+
+  const updates = {}
+
+  if (req.body.code !== undefined) {
+    const newCode = req.body.code.trim().toUpperCase()
+    if (!newCode) return reject('El código es requerido')
+    if (newCode !== order.code) {
+      const taken = await Order.findOne({ code: newCode })
+      if (taken) { files.forEach(discardUpload); return duplicateResponse(res, taken, req.user) }
+      updates.code = newCode
+    }
+  }
+
+  if (req.body.product !== undefined) {
+    if (!req.body.product.trim()) return reject('El cliente es requerido')
+    updates.product = req.body.product.trim()
+  }
+
+  if (req.body.attendedById !== undefined && String(req.body.attendedById) !== String(order.attendedById)) {
+    const vendor = await findVendor(req.body.attendedById, order.sede)
+    if (!vendor) return reject('El vendedor seleccionado no existe, está inactivo o no pertenece a la sede')
+    updates.attendedBy   = vendor.name
+    updates.attendedById = vendor._id
+  }
+
+  // Fotos: las que se conservan (solo de esta orden) + las nuevas
+  const current = order.photos?.length ? order.photos : (order.photoUrl ? [order.photoUrl] : [])
+  let keep = current
+  if (req.body.keepPhotos !== undefined) {
+    try { keep = JSON.parse(req.body.keepPhotos) } catch { return reject('Lista de fotos no válida') }
+    if (!Array.isArray(keep)) return reject('Lista de fotos no válida')
+    keep = keep.filter(p => current.includes(p))
+  }
+  const photos = [...keep, ...files.map(f => `/uploads/orders/${f.filename}`)]
+  if (!photos.length) return reject('La orden debe tener al menos una foto')
+  if (photos.length > MAX_ORDER_PHOTOS) return reject(`Máximo ${MAX_ORDER_PHOTOS} fotos por orden`)
+  if (JSON.stringify(photos) !== JSON.stringify(current)) {
+    updates.photos   = photos
+    updates.photoUrl = photos[0]
+  }
+
+  const before = order.toObject()
+  before.photos = current
+  const changes = diff(before, { ...before, ...updates }, ['code', 'product', 'attendedBy', 'photos'])
+  if (!Object.keys(changes).length) return reject('No hay cambios para guardar')
+
+  Object.assign(order, updates)
+  order.updatedAt = new Date()
+  order.edits.push({ byId: req.user.id, byName: req.user.name, byRole: req.user.role, reason, changes })
+  // Lo que corrige un supervisor vuelve a revisión del admin
+  if (req.user.role !== 'admin') order.pendingReview = true
+
+  try {
+    await order.save()
+  } catch (err) {
+    // Otro registro tomó el código nuevo al mismo tiempo
+    if (err?.code !== 11000) throw err
+    files.forEach(discardUpload)
+    const winner = await Order.findOne({ code: updates.code })
+    return winner ? duplicateResponse(res, winner, req.user) : badRequest(res, 'El código ya existe')
+  }
+
+  // Las observaciones guardan el código como texto: se mantienen al día
+  if (updates.code) await Feedback.updateMany({ order: order._id }, { $set: { orderCode: order.code } })
+
+  audit(req.user, 'corregir', 'orden', {
+    id: order.code,
+    label: updates.code ? `${before.code} → ${order.code}` : order.code,
+    sede: order.sede,
+    changes: { ...changes, reason: { from: null, to: reason } },
+  })
+  notifyAdmins(order, false, { edited: true, by: req.user.name })
+
+  ok(res, order.toAPI())
 })
 
 // PATCH /api/orders/:code — actualizar campos de la orden (solo admin)
@@ -314,10 +402,32 @@ router.post('/:code/feedback', requireAuth, requireReviewer, uploadEvidence.arra
 })
 
 // DELETE /api/orders/:code — eliminar orden (solo admin)
-router.delete('/:code', requireAuth, requireAdmin, async (req, res) => {
-  const order = await Order.findOneAndDelete({ code: req.params.code.toUpperCase() })
+// DELETE /api/orders/:code — eliminar una orden. Permiso "eliminar_ordenes"
+// (el supervisor, solo en su sede; el admin, en todas). Body: { reason } obligatorio.
+// Trazabilidad: en el historial de actividad queda una copia de los datos de la
+// orden y el motivo. Las fotos no se borran del disco.
+router.delete('/:code', requireAuth, requireModule('eliminar_ordenes'), async (req, res) => {
+  const reason = req.body?.reason?.trim()
+  if (!reason) return badRequest(res, 'Indica el motivo de la eliminación')
+
+  const order = await Order.findOneAndDelete({ code: req.params.code.toUpperCase(), ...sedeScope(req) })
   if (!order) return notFound(res, 'Orden no encontrada')
-  audit(req.user, 'eliminar', 'orden', { id: order.code, label: `${order.code} · ${order.product}`, sede: order.sede })
+
+  const photos = order.photos?.length ? order.photos : (order.photoUrl ? [order.photoUrl] : [])
+  const removed = (v) => ({ from: v ?? null, to: null })
+  audit(req.user, 'eliminar', 'orden', {
+    id: order.code,
+    label: `${order.code} · ${order.product}`,
+    sede: order.sede,
+    changes: {
+      code:       removed(order.code),
+      product:    removed(order.product),
+      attendedBy: removed(order.attendedBy || null),
+      operator:   removed(order.operator),
+      photos:     removed(photos),
+      reason:     { from: null, to: reason },
+    },
+  })
   ok(res, { message: 'Orden eliminada' })
 })
 

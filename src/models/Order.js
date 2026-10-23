@@ -23,6 +23,20 @@ const orderSchema = new Schema({
   scanCount:   { type: Number, default: 0 },
   // true cuando un supervisor registra/re-escanea la orden y el admin aún no la revisa
   pendingReview: { type: Boolean, default: false },
+  // Trazabilidad de las correcciones: quién, cuándo, por qué y qué cambió.
+  // Las fotos quitadas no se borran del disco: quedan en changes.photos.from.
+  edits: {
+    type: [{
+      _id:       false,
+      at:        { type: Date, default: Date.now },
+      byId:      { type: Schema.Types.ObjectId, ref: 'User', default: null },
+      byName:    { type: String, default: '' },
+      byRole:    { type: String, default: '' },
+      reason:    { type: String, default: '' },
+      changes:   { type: Schema.Types.Mixed, default: null }, // { campo: { from, to } }
+    }],
+    default: [],
+  },
 }, { versionKey: false })
 
 orderSchema.index({ attendedById: 1 })
@@ -52,6 +66,7 @@ orderSchema.methods.toAPI = function () {
     scannedAt:   this.scannedAt,
     scanCount:   this.scanCount,
     pendingReview: this.pendingReview,
+    edits:       this.edits || [],
   }
 }
 

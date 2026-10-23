@@ -108,6 +108,13 @@ export default {
           scheduledAt: { type: 'string', format: 'date-time' }, scannedAt: { type: 'string', format: 'date-time', nullable: true },
           updatedAt: { type: 'string', format: 'date-time' }, scanCount: { type: 'integer' },
           pendingReview: { type: 'boolean', description: 'true = el admin aún no la revisa' },
+          edits: {
+            type: 'array', description: 'Correcciones hechas a la orden (trazabilidad)',
+            items: { type: 'object', properties: {
+              at: { type: 'string', format: 'date-time' }, byName: { type: 'string' }, byRole: { type: 'string' },
+              reason: { type: 'string' }, changes: { type: 'object', description: '{ campo: { from, to } }' },
+            } },
+          },
         },
       },
       Feedback: {
@@ -353,20 +360,19 @@ export default {
       post: {
         tags: ['Órdenes'], security: bearer,
         summary: 'Registrar orden (scanner)',
-        description: 'Módulo `scanner`. Si el código ya existe responde **409** con `code: DUPLICATE`; reenvía con `confirmDuplicate=true` para registrarla de nuevo. Quien no es admin registra en su propia sede.',
+        description: 'Módulo `scanner`. Si el código ya existe responde **409** con `code: DUPLICATE` y los datos de la orden existente: un código no se puede registrar dos veces. Quien no es admin registra en su propia sede.',
         requestBody: {
           required: true,
           content: {
             'multipart/form-data': {
               schema: {
-                type: 'object', required: ['code', 'product', 'attendedById'],
+                type: 'object', required: ['code', 'product', 'attendedById', 'photos'],
                 properties: {
                   code: { type: 'string', description: 'Código de la orden' },
                   product: { type: 'string', description: 'Cliente' },
                   sede: { type: 'string', description: 'Requerido solo para admin' },
                   operator: { type: 'string' },
                   attendedById: { type: 'string', description: 'Vendedor activo de la sede de la orden (`GET /api/users/vendedores`)' },
-                  confirmDuplicate: { type: 'boolean' },
                   photos: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Páginas escaneadas (hasta 10, 8 MB c/u)' },
                 },
               },
@@ -375,7 +381,6 @@ export default {
         },
         responses: {
           201: { description: 'Orden registrada', content: json(ref('Order')) },
-          200: { description: 'Orden existente registrada de nuevo (con confirmDuplicate)', content: json(ref('Order')) },
           400: e400, 401: e401, 403: e403,
           409: { description: 'Orden duplicada', content: json({ type: 'object', properties: { code: { type: 'string', example: 'DUPLICATE' }, message: { type: 'string' }, sameUser: { type: 'boolean' }, order: ref('Order') } }) },
         },
@@ -401,7 +406,34 @@ export default {
         requestBody: { content: json({ type: 'object', properties: { product: { type: 'string' }, sede: { type: 'string' }, operator: { type: 'string' }, attendedById: { type: 'string' }, status: { type: 'string' }, priority: { type: 'string' }, line: { type: 'string' }, batch: { type: 'string' }, quantity: { type: 'number' }, completed: { type: 'number' } } }) },
         responses: { 200: { description: 'Orden actualizada', content: json(ref('Order')) }, 401: e401, 403: e403, 404: e404 },
       },
-      delete: { tags: ['Órdenes'], security: bearer, summary: 'Eliminar orden (solo admin)', responses: { 200: msg('Orden eliminada'), 401: e401, 403: e403, 404: e404 } },
+      delete: {
+        tags: ['Órdenes'], security: bearer, summary: 'Eliminar orden',
+        description: 'Permiso `eliminar_ordenes` (el supervisor, solo en su sede). Requiere `reason`. En el historial de actividad queda una copia de los datos de la orden.',
+        requestBody: { required: true, content: json({ type: 'object', required: ['reason'], properties: { reason: { type: 'string' } } }) },
+        responses: { 200: msg('Orden eliminada'), 400: e400, 401: e401, 403: e403, 404: e404 },
+      },
+    },
+    '/api/orders/{code}/correct': {
+      parameters: [{ name: 'code', in: 'path', required: true, schema: { type: 'string' } }],
+      patch: {
+        tags: ['Órdenes'], security: bearer,
+        summary: 'Corregir una orden registrada',
+        description: 'Permiso `editar_ordenes` (el supervisor, solo en su sede). Requiere `reason`. Queda en `edits` y en el historial de actividad. Si corrige un supervisor, la orden vuelve a quedar pendiente de revisión. Un código nuevo que ya exista responde **409** `DUPLICATE`.',
+        requestBody: {
+          required: true,
+          content: { 'multipart/form-data': { schema: {
+            type: 'object', required: ['reason'],
+            properties: {
+              code: { type: 'string' }, product: { type: 'string', description: 'Cliente' },
+              attendedById: { type: 'string', description: 'Vendedor de la sede de la orden' },
+              reason: { type: 'string', description: 'Motivo de la corrección' },
+              keepPhotos: { type: 'string', description: 'JSON con las URLs de las fotos actuales que se conservan, en orden' },
+              photos: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Fotos nuevas' },
+            },
+          } } },
+        },
+        responses: { 200: { description: 'Orden corregida', content: json(ref('Order')) }, 400: e400, 401: e401, 403: e403, 404: e404, 409: { description: 'El código nuevo ya existe' } },
+      },
     },
     '/api/orders/{code}/review': {
       parameters: [{ name: 'code', in: 'path', required: true, schema: { type: 'string' } }],
